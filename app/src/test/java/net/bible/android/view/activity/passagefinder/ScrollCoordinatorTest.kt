@@ -17,7 +17,6 @@
 
 package net.bible.android.view.activity.passagefinder
 
-import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -28,8 +27,8 @@ import org.junit.Test
  * when scroll-settle updates the selection.
  *
  * The bug: user scrolls to item N → snap settles → scroll-settle callback fires
- * onSelected(N) → parent updates selectedIndex → re-center LaunchedEffect triggers
- * scrollToItem(N) → aligns to viewport START, not center → visible snap-back.
+ * onSelected(N) → state layer updates selectedIndex → the re-center animation triggers
+ * and scrolls back onto item N, fighting the position the user just landed on.
  *
  * ScrollCoordinator breaks this loop by tracking whether the selection change
  * came from a scroll-settle (skip re-center) or an external source (re-center).
@@ -80,57 +79,57 @@ class ScrollCoordinatorTest {
     }
 
     @Test
-    fun `withProgrammaticScroll sets flag during execution`() = runTest {
+    fun `programmaticScroll is true between begin and end`() {
         val coordinator = ScrollCoordinator()
-        coordinator.withProgrammaticScroll {
-            assertTrue(
-                "programmaticScroll should be true inside withProgrammaticScroll",
-                coordinator.programmaticScroll,
-            )
-        }
+        coordinator.beginProgrammaticScroll()
+        assertTrue(
+            "programmaticScroll should be true while a programmatic scroll is in flight",
+            coordinator.programmaticScroll,
+        )
+        coordinator.endProgrammaticScroll()
         assertFalse(
-            "programmaticScroll should be false after withProgrammaticScroll",
+            "programmaticScroll should be false once the scroll has ended",
             coordinator.programmaticScroll,
         )
     }
 
     @Test
-    fun `withProgrammaticScroll resets flag even on exception`() = runTest {
+    fun `overlapping programmatic scrolls keep flag true until all complete`() {
+        // Models a re-center animation being retargeted before the previous one has
+        // finished: the first animation's end must not clear the flag while the second
+        // is still running, or the settle callback would fire mid-animation and commit
+        // whichever item happened to be passing the centre.
         val coordinator = ScrollCoordinator()
-        try {
-            coordinator.withProgrammaticScroll {
-                throw RuntimeException("simulated error")
-            }
-        } catch (_: RuntimeException) {
-            // expected
-        }
+        coordinator.beginProgrammaticScroll()
+        coordinator.beginProgrammaticScroll()
+        coordinator.endProgrammaticScroll()
+        assertEquals(
+            "second scroll still in flight, flag must remain true",
+            true,
+            coordinator.programmaticScroll,
+        )
+        coordinator.endProgrammaticScroll()
         assertFalse(
-            "programmaticScroll should be reset even after exception",
+            "flag should be cleared once every overlapping scroll has ended",
             coordinator.programmaticScroll,
         )
     }
 
     @Test
-    fun `overlapping withProgrammaticScroll calls keep flag true until all complete`() = runTest {
-        // Models the scenario where a re-center LaunchedEffect restarts before the
-        // previous one's `finally` has run: the inner block's exit must not clear the
-        // flag while the outer block is still in flight.
+    fun `unbalanced end does not drive the counter negative`() {
+        // A cancelled animation can end a scroll that was never begun (or end it twice).
+        // If that drove the counter below zero, the next genuine programmatic scroll
+        // would fail to raise the flag and its settle would be misread as user input.
         val coordinator = ScrollCoordinator()
-        coordinator.withProgrammaticScroll {
-            assertEquals(true, coordinator.programmaticScroll)
-            coordinator.withProgrammaticScroll {
-                assertEquals(true, coordinator.programmaticScroll)
-            }
-            assertEquals(
-                "outer scroll still in flight, flag must remain true",
-                true,
-                coordinator.programmaticScroll,
-            )
-        }
-        assertFalse(
-            "flag should be cleared once every overlapping scroll has returned",
+        coordinator.endProgrammaticScroll()
+        coordinator.endProgrammaticScroll()
+        coordinator.beginProgrammaticScroll()
+        assertTrue(
+            "flag must still rise after unbalanced end calls",
             coordinator.programmaticScroll,
         )
+        coordinator.endProgrammaticScroll()
+        assertFalse(coordinator.programmaticScroll)
     }
 
     @Test
@@ -158,15 +157,15 @@ class ScrollCoordinatorTest {
     }
 
     @Test
-    fun `external selection change should trigger re-center`() = runTest {
+    fun `external selection change should trigger re-center`() {
         val coordinator = ScrollCoordinator()
 
         // No markScrollSettled() — this is an external change (tap, boundary crossing)
         assertTrue(coordinator.shouldRecenter())
 
-        // The programmatic scroll wrapping ensures scroll-settle is suppressed
-        coordinator.withProgrammaticScroll {
-            assertTrue(coordinator.programmaticScroll)
-        }
+        // Bracketing the resulting animation suppresses its own scroll-settle callback
+        coordinator.beginProgrammaticScroll()
+        assertTrue(coordinator.programmaticScroll)
+        coordinator.endProgrammaticScroll()
     }
 }

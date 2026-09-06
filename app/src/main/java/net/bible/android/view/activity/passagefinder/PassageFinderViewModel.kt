@@ -67,8 +67,10 @@ data class PassageFinderUiState(
 /**
  * State machine for the PassageFinder widget.
  *
- * Owns the book list and current selection state. Scroll offset is NOT stored here --
- * it is Compose-local state to avoid backward-write loops (see RESEARCH.md Pitfall 3).
+ * Owns the book list and current selection state. Scroll offsets are deliberately NOT
+ * stored here: they live in [PassageFinderView] alongside the scroll animations that
+ * drive them. Hoisting them would create a write-back loop, where committing a settled
+ * offset to state would in turn re-target the animation that produced it.
  */
 class PassageFinderViewModel(
     private val dataSource: PassageFinderDataSource,
@@ -85,7 +87,7 @@ class PassageFinderViewModel(
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
-    /** Emits the confirmed [Verse] when the user finalizes their selection. Collected by Phase 4. */
+    /** Emits the confirmed [Verse] when the user finalizes their selection. */
     val selectionConfirmed: SharedFlow<Verse> = _selectionConfirmed.asSharedFlow()
 
     private val _previewVerseText = MutableStateFlow<String?>(null)
@@ -115,11 +117,25 @@ class PassageFinderViewModel(
     }
 
     /**
-     * Load book data and make the widget visible, centered on the currently active book.
-     * Called from PassageFinderLauncher.show().
+     * Marks the widget as opening while its book list is still being loaded.
+     *
+     * The view renders a placeholder in this state. It exists so that the tap can put
+     * something on screen in the very next frame even when the module's book list has
+     * not been read from disk yet — [show] then fills in the real content.
      */
-    fun show() {
-        val books = dataSource.getBooks()
+    fun showLoading() {
+        _previewVerseText.value = null
+        _uiState.value = PassageFinderUiState(visible = true)
+    }
+
+    /**
+     * Makes the widget visible on [bookList], centered on the currently active book.
+     *
+     * The book list is passed in rather than fetched here because loading it touches
+     * disk; [PassageFinderLauncher] obtains it from the cache or off the main thread.
+     */
+    fun show(bookList: PassageFinderDataSource.BookList) {
+        val books = bookList.books
         if (books.isEmpty()) {
             // Module yields no books — nothing to navigate. Keep the widget hidden
             // and let the caller fall back to the legacy passage chooser.
@@ -131,7 +147,8 @@ class PassageFinderViewModel(
         val currentBookIndex = books.indexOfFirst { it.book == currentVerse.book }
             .coerceAtLeast(0)
         val currentBook = books[currentBookIndex].book
-        val chapterCount = dataSource.getChapterCount(currentBook)
+        val chapterCount = bookList.chapterCounts.getOrNull(currentBookIndex)
+            ?: dataSource.getChapterCount(currentBook)
         val chapter = currentVerse.chapter.coerceIn(1, chapterCount)
         val verseCount = dataSource.getVerseCount(currentBook, chapter)
 
@@ -162,7 +179,7 @@ class PassageFinderViewModel(
      * Confirm the current selection and dismiss the widget.
      *
      * Builds a [Verse] from the current UI state and emits it to [selectionConfirmed]
-     * for consumption by the navigation layer (Phase 4). Then dismisses the widget.
+     * for the navigation layer to act on. Then dismisses the widget.
      */
     fun confirmSelection() {
         val state = _uiState.value
@@ -173,10 +190,7 @@ class PassageFinderViewModel(
         dismiss()
     }
 
-    /**
-     * Update the selected book index as the user scrolls.
-     * Called from Compose via snapshotFlow on the derived selected index.
-     */
+    /** Update the selected book index once a book scroll settles on a new spine. */
     fun onBookSelected(index: Int) {
         val state = _uiState.value
         if (index in state.books.indices) {
@@ -185,7 +199,8 @@ class PassageFinderViewModel(
             val chapterCount = dataSource.getChapterCount(book)
             // When the book changes we snap back to chapter 1 / verse 1; otherwise
             // keep the user's current chapter and clamp selectedVerse against the
-            // new book's verse count so VerseStrip's scrollToItem stays in range.
+            // new book's verse count so the verse strip cannot centre a verse that
+            // does not exist there.
             val effectiveChapter = if (bookChanged) 1 else state.selectedChapter
             val verseCount = dataSource.getVerseCount(book, effectiveChapter)
             val effectiveVerse = if (bookChanged) 1
@@ -322,20 +337,6 @@ class PassageFinderViewModel(
         )
         val book = state.books.getOrNull(state.selectedBookIndex)?.book ?: return
         verseSelectionFlow.tryEmit(Triple(book, state.selectedChapter, verse))
-    }
-
-    /** Returns the chapter count for a book at the given index. Used as a lambda by strip composables. */
-    fun getChapterCount(bookIndex: Int): Int {
-        val books = _uiState.value.books
-        if (bookIndex !in books.indices) return 1
-        return dataSource.getChapterCount(books[bookIndex].book)
-    }
-
-    /** Returns the verse count for a book/chapter. Used as a lambda by strip composables. */
-    fun getVerseCount(bookIndex: Int, chapter: Int): Int {
-        val books = _uiState.value.books
-        if (bookIndex !in books.indices) return 1
-        return dataSource.getVerseCount(books[bookIndex].book, chapter)
     }
 
     companion object {

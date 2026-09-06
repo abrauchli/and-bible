@@ -55,7 +55,7 @@ class BookCategoryTest {
 
     @Test
     fun `all category colors are unique`() {
-        val colors = BookCategory.values().map { it.color.value }
+        val colors = BookCategory.values().map { it.color }
         assertEquals(
             "duplicate colors detected across BookCategory values",
             colors.size,

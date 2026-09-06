@@ -17,7 +17,7 @@
 
 package net.bible.android.view.activity.passagefinder
 
-import androidx.compose.ui.graphics.Color
+import androidx.annotation.ColorInt
 import org.crosswire.jsword.versification.BibleBook
 
 /**
@@ -28,21 +28,21 @@ import org.crosswire.jsword.versification.BibleBook
  * apocryphal/deuterocanonical books — anything past Revelation in JSword's
  * BibleBook enum — so Catholic and Orthodox modules render their full canon.
  *
- * Each category carries a normal color and a monochrome shade
+ * Each category carries a normal color (packed ARGB) and a monochrome shade
  * (0.0 = black, 1.0 = white) used on e-ink devices.
  */
-enum class BookCategory(val color: Color, val monochromeShade: Float) {
-    PENTATEUCH(Color(0xFFCCCCFE), 0.85f),
-    HISTORY(Color(0xFFFECC9B), 0.75f),
-    WISDOM(Color(0xFF99FF99), 0.70f),
-    MAJOR_PROPHETS(Color(0xFFFF99FF), 0.65f),
-    MINOR_PROPHETS(Color(0xFFFFFECD), 0.80f),
-    GOSPELS(Color(0xFFFF9703), 0.55f),
-    ACTS(Color(0xFF0099FF), 0.50f),
-    PAULINE(Color(0xFFFFFF31), 0.60f),
-    GENERAL_EPISTLES(Color(0xFF67CC66), 0.45f),
-    REVELATION(Color(0xFFFE33FF), 0.40f),
-    DEUTEROCANONICAL(Color(0xFFD4A574), 0.35f);
+enum class BookCategory(@ColorInt val color: Int, val monochromeShade: Float) {
+    PENTATEUCH(0xFFCCCCFE.toInt(), 0.85f),
+    HISTORY(0xFFFECC9B.toInt(), 0.75f),
+    WISDOM(0xFF99FF99.toInt(), 0.70f),
+    MAJOR_PROPHETS(0xFFFF99FF.toInt(), 0.65f),
+    MINOR_PROPHETS(0xFFFFFECD.toInt(), 0.80f),
+    GOSPELS(0xFFFF9703.toInt(), 0.55f),
+    ACTS(0xFF0099FF.toInt(), 0.50f),
+    PAULINE(0xFFFFFF31.toInt(), 0.60f),
+    GENERAL_EPISTLES(0xFF67CC66.toInt(), 0.45f),
+    REVELATION(0xFFFE33FF.toInt(), 0.40f),
+    DEUTEROCANONICAL(0xFFD4A574.toInt(), 0.35f);
 
     companion object {
         fun forBook(book: BibleBook): BookCategory = when {

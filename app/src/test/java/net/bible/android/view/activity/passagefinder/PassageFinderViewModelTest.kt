@@ -65,7 +65,6 @@ class PassageFinderViewModelTest {
         Dispatchers.setMain(testDispatcher)
 
         dataSource = mock()
-        whenever(dataSource.getBooks()).thenReturn(testBooks)
         whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.GEN, 1, 1))
         whenever(dataSource.getChapterCount(eq(BibleBook.GEN))).thenReturn(50)
         whenever(dataSource.getChapterCount(eq(BibleBook.EXOD))).thenReturn(40)
@@ -81,9 +80,20 @@ class PassageFinderViewModelTest {
         Dispatchers.resetMain()
     }
 
+    /**
+     * Builds the loaded book list the launcher would hand to [PassageFinderViewModel.show],
+     * deriving each chapter count from the stubbed data source.
+     */
+    private fun bookList(
+        books: List<PassageFinderDataSource.BookInfo> = testBooks,
+    ) = PassageFinderDataSource.BookList(
+        books,
+        IntArray(books.size) { dataSource.getChapterCount(books[it].book) },
+    )
+
     @Test
     fun `confirmSelection emits Verse with correct book chapter verse`() = runTest {
-        viewModel.show()
+        viewModel.show(bookList())
 
         // Navigate to Exodus (index 1), chapter 3, verse 7
         viewModel.onBookSelected(1)
@@ -107,7 +117,7 @@ class PassageFinderViewModelTest {
 
     @Test
     fun `confirmSelection sets visible to false`() = runTest {
-        viewModel.show()
+        viewModel.show(bookList())
         assertTrue(viewModel.uiState.value.visible)
 
         val deferred = async { viewModel.selectionConfirmed.first() }
@@ -121,10 +131,9 @@ class PassageFinderViewModelTest {
     }
 
     @Test
-    fun `show stays hidden when datasource returns no books`() = runTest {
-        whenever(dataSource.getBooks()).thenReturn(emptyList())
+    fun `show stays hidden when the module has no books`() = runTest {
         val vm = PassageFinderViewModel(dataSource)
-        vm.show()
+        vm.show(bookList(emptyList()))
         assertFalse(
             "widget must not become visible when there are no books to navigate",
             vm.uiState.value.visible,
@@ -134,7 +143,7 @@ class PassageFinderViewModelTest {
 
     @Test
     fun `show clears stale preview verse text`() = runTest {
-        viewModel.show()
+        viewModel.show(bookList())
         viewModel.drillDown()                      // BOOK -> CHAPTER
         viewModel.drillDown()                      // CHAPTER -> VERSE
         viewModel.onVerseSelected(5)
@@ -143,7 +152,7 @@ class PassageFinderViewModelTest {
         // (In real usage the debounced flow would have populated this.)
         viewModel.dismiss()
 
-        viewModel.show()
+        viewModel.show(bookList())
         assertEquals(null, viewModel.previewVerseText.value)
     }
 
@@ -171,7 +180,7 @@ class PassageFinderViewModelTest {
         whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.GEN, 1, 31))
 
         val vm = PassageFinderViewModel(dataSource)
-        vm.show()
+        vm.show(bookList())
         assertEquals(31, vm.uiState.value.selectedVerse)
         vm.onBookSelected(3)  // switch to Matthew
         assertEquals(
@@ -188,12 +197,11 @@ class PassageFinderViewModelTest {
         val singleChapterBooks = testBooks + PassageFinderDataSource.BookInfo(
             BibleBook.OBAD, "Obad", "Obadiah", BookCategory.MINOR_PROPHETS,
         )
-        whenever(dataSource.getBooks()).thenReturn(singleChapterBooks)
         whenever(dataSource.getChapterCount(eq(BibleBook.OBAD))).thenReturn(1)
         whenever(dataSource.getVerseCount(eq(BibleBook.OBAD), eq(1))).thenReturn(21)
 
         val vm = PassageFinderViewModel(dataSource)
-        vm.show()
+        vm.show(bookList(singleChapterBooks))
         vm.onBookSelected(4)
         vm.drillDown()
 
@@ -208,7 +216,7 @@ class PassageFinderViewModelTest {
         // Open book is Genesis (index 0). Move to Exodus (a non-open book), scroll the
         // chapter strip to chapter 5 while still at BOOK level, then drill down.
         // drillDown must keep chapter 5 rather than snapping back to chapter 1.
-        viewModel.show()
+        viewModel.show(bookList())
         viewModel.onBookSelected(1)            // -> Exodus, selectedChapter reset to 1
         viewModel.onChapterSelected(5)         // user scrolls chapter strip to chapter 5
         assertEquals(5, viewModel.uiState.value.selectedChapter)
@@ -226,7 +234,7 @@ class PassageFinderViewModelTest {
 
     @Test
     fun `drillUp from BOOK level returns false`() {
-        viewModel.show()
+        viewModel.show(bookList())
         assertFalse(
             "drillUp at BOOK level should signal dismiss",
             viewModel.drillUp(),
@@ -235,18 +243,11 @@ class PassageFinderViewModelTest {
 
     @Test
     fun `drillDown clamps at VERSE level`() {
-        viewModel.show()
+        viewModel.show(bookList())
         viewModel.drillDown()  // BOOK -> CHAPTER
         viewModel.drillDown()  // CHAPTER -> VERSE
         val before = viewModel.uiState.value.currentLevel
         viewModel.drillDown()  // already at VERSE, must not crash or change
         assertEquals(before, viewModel.uiState.value.currentLevel)
-    }
-
-    @Test
-    fun `getChapterCount returns 1 for out-of-range book index`() {
-        viewModel.show()
-        // Index 999 is out of bounds; should defensively return 1
-        assertEquals(1, viewModel.getChapterCount(999))
     }
 }

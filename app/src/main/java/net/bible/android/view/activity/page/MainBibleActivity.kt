@@ -324,7 +324,11 @@ class MainBibleActivity : CustomTitlebarActivityBase() {
 
         CommonUtils.buildActivityComponent().inject(this)
 
-        passageFinderLauncher = PassageFinderLauncher(this, navigationControl, pageControl)
+        passageFinderLauncher = PassageFinderLauncher(this, navigationControl, pageControl).apply {
+            onNoBooks = {
+                pageControl.currentPageManager.currentPage.startKeyChooser(this@MainBibleActivity)
+            }
+        }
 
         windowRepository = WindowRepository(lifecycleScope)
         windowControl.windowRepository = windowRepository
@@ -2250,6 +2254,13 @@ class MainBibleActivity : CustomTitlebarActivityBase() {
         }
         // allow webView to start monitoring tilt by setting focus which causes tilt-scroll to resume
         documentViewManager.documentView.asView().requestFocus()
+
+        // Read the active module's book list ahead of time so tapping the title opens the
+        // passage finder on real content instead of a placeholder. Posted so it queues
+        // behind the work of actually getting back on screen, and cheap when already warm.
+        if (CommonUtils.settings.getBoolean("passage_finder_enabled", false)) {
+            binding.root.post { passageFinderLauncher.warmUp() }
+        }
 
         // Check for pending AI agent results that completed while app was backgrounded
         handlePendingAgentResult()

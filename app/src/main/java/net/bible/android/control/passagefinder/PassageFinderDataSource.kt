@@ -49,14 +49,49 @@ class PassageFinderDataSource(
     )
 
     /**
-     * Returns every book of the active Bible module in canonical order, including
+     * The navigable books of one module, with each book's chapter count alongside.
+     *
+     * The counts travel with the list because the passage finder needs all of them up
+     * front to size its book spines, and resolving them one at a time on the UI thread
+     * is exactly the cost this class exists to avoid.
+     */
+    class BookList(
+        val books: List<BookInfo>,
+        val chapterCounts: IntArray,
+    )
+
+    /** Cached per module, keyed by document initials. See [loadBooks]. */
+    @Volatile
+    private var cache: Pair<String, BookList>? = null
+
+    /**
+     * Returns the book list for the active module if it has already been loaded.
+     *
+     * Non-blocking, for the tap path: a hit means the finder can render its real content
+     * on the very first frame, and a miss means it should show its placeholder and wait
+     * for [loadBooks].
+     */
+    fun cachedBooks(): BookList? {
+        val key = currentDocumentKey() ?: return null
+        return cache?.takeIf { it.first == key }?.second
+    }
+
+    /**
+     * Loads every book of the active Bible module in canonical order, including
      * deuterocanonical / apocryphal books for Catholic and Orthodox canons.
      * Introductory pseudo-books are excluded.
+     *
+     * Runs on [Dispatchers.IO] and caches per module, because the first call for a given
+     * module is expensive in a way that is invisible from here: JSword answers
+     * "does this module contain this book?" by reading the module's index off disk, once
+     * per book. On a cold module that is well over a hundred file reads, which is why
+     * this must never sit between the user's tap and the first frame.
      */
-    fun getBooks(): List<BookInfo> {
+    suspend fun loadBooks(): BookList = withContext(Dispatchers.IO) {
+        cachedBooks()?.let { return@withContext it }
         val versification = navigationControl.versification
         val books = navigationControl.getAllDocumentBooksExcludingIntros()
-        return books.map { book ->
+        val infos = books.map { book ->
             BookInfo(
                 book = book,
                 shortName = versification.getShortName(book),
@@ -64,6 +99,20 @@ class PassageFinderDataSource(
                 category = BookCategory.forBook(book),
             )
         }
+        val counts = IntArray(infos.size) { getChapterCount(infos[it].book) }
+        val loaded = BookList(infos, counts)
+        currentDocumentKey()?.let { cache = it to loaded }
+        loaded
+    }
+
+    /** Identity of the module the book list belongs to, or null if none is open. */
+    private fun currentDocumentKey(): String? = try {
+        pageControl.currentPageManager.currentPassageDocument.initials
+    } catch (e: Exception) {
+        // No usable document yet (e.g. very early in startup). Treat as a cache miss
+        // rather than failing the caller.
+        Log.d(TAG, "No current passage document while keying the book cache", e)
+        null
     }
 
     /**

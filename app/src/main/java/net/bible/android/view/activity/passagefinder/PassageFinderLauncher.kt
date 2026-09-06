@@ -17,14 +17,13 @@
 
 package net.bible.android.view.activity.passagefinder
 
+import android.util.Log
 import android.view.View
 import android.view.ViewGroup
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import net.bible.android.control.navigation.NavigationControl
 import net.bible.android.control.page.PageControl
@@ -32,19 +31,37 @@ import net.bible.android.control.passagefinder.PassageFinderDataSource
 import net.bible.android.view.activity.page.MainBibleActivity
 
 /**
- * Manages the ComposeView lifecycle for the PassageFinder widget overlay.
- * Added as a child of the DrawerLayout so it floats above all content including toolbar.
+ * Owns the passage finder overlay: creates its view, wires it to the ViewModel, and
+ * routes a confirmed selection into the Bible view.
  *
- * Per D-15: Built directly in MainBibleActivity, no standalone test activity.
- * Uses ViewCompositionStrategy.DisposeOnDetachedFromWindow to handle Activity lifecycle correctly.
+ * The overlay is a plain [PassageFinderView] added to the DrawerLayout, so it floats
+ * above everything including the toolbar and the navigation drawer.
+ *
+ * The important thing this class does is keep disk work off the tap path. Loading a
+ * module's book list means asking JSword whether the module contains each book, which on
+ * a cold module is well over a hundred file reads — enough to stall the tap for a visible
+ * beat. So [warmUp] primes that list in the background, and [show] never waits for it:
+ * on a cache hit the finder opens fully populated, and on a miss it opens on a
+ * placeholder and fills in when the load lands.
  */
 class PassageFinderLauncher(
     private val activity: MainBibleActivity,
     private val navigationControl: NavigationControl,
     private val pageControl: PageControl,
 ) {
-    private var composeView: ComposeView? = null
+    private var view: PassageFinderView? = null
+    private var stateJob: Job? = null
     private var navigationJob: Job? = null
+    private var loadJob: Job? = null
+
+    /**
+     * Invoked when the active module turns out to have no books to navigate, which can
+     * only be discovered after the list has loaded. The caller should fall back to the
+     * legacy passage chooser.
+     */
+    var onNoBooks: (() -> Unit)? = null
+
+    private val dataSource by lazy { PassageFinderDataSource(navigationControl, pageControl) }
 
     /**
      * Obtain the ViewModel from the activity's ViewModelStore so its [androidx.lifecycle.viewModelScope]
@@ -58,77 +75,142 @@ class PassageFinderLauncher(
     private val viewModel: PassageFinderViewModel by lazy {
         ViewModelProvider(
             activity,
-            PassageFinderViewModelFactory(
-                PassageFinderDataSource(navigationControl, pageControl)
-            ),
+            PassageFinderViewModelFactory(dataSource),
         )[PassageFinderViewModel::class.java]
     }
 
     /**
-     * Open the passage finder overlay.
+     * Primes the book list for the active module in the background.
      *
-     * @return true if the widget was actually shown; false if the active module has no
-     *   books to navigate (in which case the caller should fall back to the legacy chooser).
+     * Safe and cheap to call repeatedly: the data source caches per module, so this is a
+     * no-op once the current module is warm and re-primes automatically after a document
+     * switch. Call it when the reader settles, not during startup, so it competes with
+     * nothing the user is waiting on.
      */
-    fun show(): Boolean {
-        val vm = viewModel
-        vm.show()
-        if (!vm.uiState.value.visible) {
-            // ViewModel.show() refused — typically because the active module yields no books.
-            // Skip showing the ComposeView so the caller can fall back to the legacy chooser
-            // rather than presenting an empty overlay.
-            return false
-        }
-
-        ensureComposeView()
-        composeView?.setContent {
-            PassageFinderWidget(
-                viewModel = vm,
-                onDismiss = { hide() },
-            )
-        }
-        composeView?.visibility = View.VISIBLE
-        composeView?.bringToFront()
-
-        // Collect confirmed verse selections and navigate the Bible view
-        navigationJob?.cancel()
-        navigationJob = activity.lifecycleScope.launch {
-            vm.selectionConfirmed.collect { verse ->
-                pageControl.currentPageManager.currentBible.setKey(verse)
-                hide()
+    fun warmUp() {
+        if (dataSource.cachedBooks() != null) return
+        activity.lifecycleScope.launch {
+            try {
+                dataSource.loadBooks()
+            } catch (e: Exception) {
+                // Priming is best-effort; a failure here just means show() pays the cost.
+                Log.d(TAG, "Passage finder warm-up failed", e)
             }
         }
+    }
+
+    /**
+     * Opens the passage finder overlay.
+     *
+     * @return true if the overlay was shown. False only when the book list is already
+     *   known and empty, in which case the caller should use the legacy chooser; when the
+     *   list has yet to load this returns true and [onNoBooks] fires later if it turns
+     *   out to be empty.
+     */
+    fun show(): Boolean {
+        val cached = dataSource.cachedBooks()
+        if (cached != null && cached.books.isEmpty()) return false
+
+        val finder = ensureView()
+        loadJob?.cancel()
+
+        if (cached != null) {
+            finder.setBooks(cached.books, cached.chapterCounts)
+            viewModel.show(cached)
+            if (!viewModel.uiState.value.visible) return false
+        } else {
+            // Nothing loaded yet: put the overlay on screen now with a placeholder and
+            // fill it in when the list arrives, rather than making the user wait on disk.
+            finder.setBooks(emptyList(), IntArray(0))
+            viewModel.showLoading()
+            loadJob = activity.lifecycleScope.launch {
+                val loaded = try {
+                    dataSource.loadBooks()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to load books for passage finder", e)
+                    null
+                }
+                if (!finder.isShowing) return@launch
+                if (loaded == null || loaded.books.isEmpty()) {
+                    hide()
+                    onNoBooks?.invoke()
+                    return@launch
+                }
+                finder.setBooks(loaded.books, loaded.chapterCounts)
+                viewModel.show(loaded)
+            }
+        }
+
+        startCollecting(finder)
+        finder.show()
+        finder.bringToFront()
         return true
     }
 
     fun hide() {
+        loadJob?.cancel()
+        loadJob = null
         navigationJob?.cancel()
         navigationJob = null
-        // Sync the ViewModel state with the hidden view. In normal flow the widget
-        // already calls dismiss()/confirmSelection() before invoking onDismiss, but
-        // hide() can also be called externally (e.g. on back press), so be defensive.
+        stateJob?.cancel()
+        stateJob = null
+        // Sync the ViewModel state with the hidden view. In normal flow the view already
+        // reports a dismiss before this runs, but hide() can also be called externally
+        // (e.g. on back press), so be defensive.
         viewModel.dismiss()
-        composeView?.visibility = View.GONE
+        view?.hide()
     }
 
     val isVisible: Boolean
-        get() = composeView?.visibility == View.VISIBLE
+        get() = view?.isShowing == true
 
-    private fun ensureComposeView() {
-        if (composeView != null) return
-        composeView = ComposeView(activity).apply {
-            setViewCompositionStrategy(
-                ViewCompositionStrategy.DisposeOnDetachedFromWindow
-            )
+    /** Mirrors ViewModel state into the view and routes confirmed selections. */
+    private fun startCollecting(finder: PassageFinderView) {
+        stateJob?.cancel()
+        stateJob = activity.lifecycleScope.launch {
+            combine(viewModel.uiState, viewModel.previewVerseText) { state, text -> state to text }
+                .collect { (state, text) -> finder.render(state, text) }
         }
-        // Add as overlay to drawerLayout (the DrawerLayout root) so it floats above
-        // all content including toolbar and navigation drawer. Append rather than insert
-        // at a fixed index — show() calls bringToFront() to raise it, so the insertion
-        // position doesn't matter and appending is robust as the layout evolves.
-        val params = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.MATCH_PARENT,
+
+        navigationJob?.cancel()
+        navigationJob = activity.lifecycleScope.launch {
+            viewModel.selectionConfirmed.collect { verse ->
+                pageControl.currentPageManager.currentBible.setKey(verse)
+                hide()
+            }
+        }
+    }
+
+    private fun ensureView(): PassageFinderView {
+        view?.let { return it }
+        val finder = PassageFinderView(activity).apply {
+            visibility = View.GONE
+            onDismiss = { this@PassageFinderLauncher.hide() }
+            // Don't hide() here: the selectionConfirmed collector navigates and then hides
+            // the view itself. Cancelling navigationJob early would race the emission and
+            // silently drop the navigation.
+            onConfirm = { viewModel.confirmSelection() }
+            onBookSelected = { viewModel.onBookSelected(it) }
+            onChapterSelected = { viewModel.onChapterSelected(it) }
+            onVerseSelected = { viewModel.onVerseSelected(it) }
+            onDrillDown = { viewModel.drillDown() }
+            onDrillUp = { viewModel.drillUp() }
+        }
+        // Append rather than insert at a fixed index — show() calls bringToFront() to
+        // raise it, so the insertion position doesn't matter and appending is robust as
+        // the layout evolves.
+        activity.binding.drawerLayout.addView(
+            finder,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
         )
-        activity.binding.drawerLayout.addView(composeView, params)
+        view = finder
+        return finder
+    }
+
+    private companion object {
+        const val TAG = "PassageFinderLauncher"
     }
 }

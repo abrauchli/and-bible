@@ -23,10 +23,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * Coordinates scroll state between user-initiated scrolling and programmatic re-centering
  * to prevent feedback loops where scroll-settle → selection update → re-center → misalignment.
  *
- * When a LazyRow's snap fling settles on an item, the scroll-settle callback notifies the
- * parent of the new selection. Without coordination, the parent's state change triggers a
- * LaunchedEffect that calls scrollToItem — which aligns to viewport start, not center,
- * displacing the already-centered item. This class breaks that feedback loop.
+ * When a strip's snap settles on an item, the scroll-settle callback notifies the state
+ * layer of the new selection. Without coordination, that state change would immediately
+ * trigger a re-center animation back onto the very item the user just landed on — at best
+ * redundant work, at worst a visible twitch if the two disagree by a fraction of a pixel.
+ * This class breaks that loop.
  */
 class ScrollCoordinator {
     // Counter rather than a boolean so overlapping programmatic scrolls (e.g. a new
@@ -64,17 +65,30 @@ class ScrollCoordinator {
     }
 
     /**
-     * Wraps a programmatic scroll operation, keeping [programmaticScroll] true for the
-     * duration so scroll-settle callbacks are suppressed. Re-entrant: nested or overlapping
-     * calls each bump the counter, and the flag only clears when every active call has
-     * returned (or been cancelled).
+     * Marks the start of a programmatic scroll, keeping [programmaticScroll] true — and
+     * so scroll-settle callbacks suppressed — until the matching [endProgrammaticScroll].
+     *
+     * A programmatic re-center animates across many frames, so its start and end are
+     * necessarily separate events rather than a scoped block. Pair every call with an
+     * [endProgrammaticScroll], including on the paths where the animation is cut short
+     * by the user grabbing the strip again.
      */
-    suspend fun <T> withProgrammaticScroll(block: suspend () -> T): T {
+    fun beginProgrammaticScroll() {
         programmaticScrollCount.incrementAndGet()
-        try {
-            return block()
-        } finally {
-            programmaticScrollCount.decrementAndGet()
+    }
+
+    /**
+     * Ends one programmatic scroll started by [beginProgrammaticScroll].
+     *
+     * Floors at zero so an unbalanced extra call cannot drive the counter negative and
+     * leave the flag stuck off. Written as a compare-and-set loop rather than
+     * `updateAndGet`, which needs API 24.
+     */
+    fun endProgrammaticScroll() {
+        while (true) {
+            val current = programmaticScrollCount.get()
+            if (current <= 0) return
+            if (programmaticScrollCount.compareAndSet(current, current - 1)) return
         }
     }
 }

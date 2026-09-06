@@ -1997,4 +1997,6 @@
     <string name="passage_finder_a11y_label">Bible passage selector. Swipe horizontally to choose a book, chapter, or verse. Swipe up to drill in, swipe down to go back.</string>
     <string name="passage_finder_a11y_dismiss">Dismiss passage finder</string>
     <string name="passage_finder_a11y_go_to">Go to %1$s</string>
+    <string name="passage_finder_a11y_chapter">Chapter %1$d</string>
+    <string name="passage_finder_a11y_verse">Verse %1$d</string>
 </resources>
