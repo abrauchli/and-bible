@@ -1292,6 +1292,9 @@ class MainBibleActivity : CustomTitlebarActivityBase() {
     fun onEventMainThread(passageEvent: CurrentVerseChangedEvent) {
         if(paused) return
         updateTitle()
+        // Keep an open passage finder pointing at whatever the reader is showing, so one
+        // opened mid-scroll follows the text rather than freezing on a stale reference.
+        passageFinderLauncher.onCurrentVerseChanged()
     }
 
     fun onEventMainThread(event: CloudSyncEvent) {

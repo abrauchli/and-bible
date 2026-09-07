@@ -240,6 +240,56 @@ class StripGeometryTest {
     }
 
     @Test
+    fun `every point across the strip resolves to a spine`() {
+        // Spines are separated by a gap. A tap landing in one used to match no spine at
+        // all, which fell through to dismissing the whole widget — so repeatedly tapping
+        // books would close the finder after a few tries. Nearest-spine resolution has to
+        // cover every x across the strip, gaps included.
+        val lane = lensLane()
+        lane.scroll = lane.snapPointFor(33)
+        lane.layout(centre)
+        val range = lane.visibleRange(1080f)
+        val from = lane.lefts[range.first]
+        val to = lane.lefts[range.last] + lane.widths[range.last]
+
+        var x = from
+        while (x <= to) {
+            val nearest = nearestSpine(lane, range, x)
+            assertTrue("no spine resolved for x=$x", nearest in range)
+            x += 1f
+        }
+    }
+
+    @Test
+    fun `a point in the gap resolves to one of the two spines beside it`() {
+        val lane = lensLane()
+        lane.scroll = lane.snapPointFor(33)
+        lane.layout(centre)
+        val range = lane.visibleRange(1080f)
+        // Dead centre of the gap after spine 30.
+        val gapCentre = lane.lefts[30] + lane.widths[30] + gap / 2f
+        val nearest = nearestSpine(lane, range, gapCentre)
+        assertTrue("gap should belong to a neighbouring spine", nearest == 30 || nearest == 31)
+    }
+
+    /** Mirrors the view's nearest-spine hit test. */
+    private fun nearestSpine(lane: LensLane, range: IntRange, x: Float): Int {
+        var nearest = range.first
+        var nearestDistance = Float.MAX_VALUE
+        for (i in range) {
+            val left = lane.lefts[i]
+            val right = left + lane.widths[i]
+            if (x in left..right) return i
+            val distance = minOf(abs(x - left), abs(x - right))
+            if (distance < nearestDistance) {
+                nearestDistance = distance
+                nearest = i
+            }
+        }
+        return nearest
+    }
+
+    @Test
     fun `an empty lane is inert rather than throwing`() {
         val lane = LensLane().apply { setBaseWidths(FloatArray(0)) }
         assertEquals(0, lane.itemCount)

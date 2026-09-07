@@ -100,6 +100,9 @@ class PassageFinderView(context: Context) : View(context) {
     /** Invoked on a downward swipe. Returns false when already at book level, which dismisses. */
     var onDrillUp: (() -> Boolean)? = null
 
+    /** Invoked the moment the user touches a strip, ending any scripture-following. */
+    var onUserInteracted: (() -> Unit)? = null
+
     // ---- State mirrored from the ViewModel -----------------------------------------
 
     private var books: List<PassageFinderDataSource.BookInfo> = emptyList()
@@ -290,7 +293,11 @@ class PassageFinderView(context: Context) : View(context) {
 
     private fun finishHide() {
         dismissing = false
-        visibility = GONE
+        // INVISIBLE rather than GONE: a GONE view is skipped during measurement, so every
+        // open and close would force a fresh layout pass over the whole DrawerLayout —
+        // including the Bible WebView, which abandons an in-flight fling when that
+        // happens. INVISIBLE keeps the overlay laid out and costs only a skipped draw.
+        visibility = INVISIBLE
     }
 
     private fun applyAnimationSetting() {
@@ -609,9 +616,12 @@ class PassageFinderView(context: Context) : View(context) {
                 lastX = x
                 lockedVertical = null
                 cumulativeVertical = 0f
-                activeScroller = scrollerAt(y)
+                activeScroller = bandAt(y)
                 // Grabbing a moving strip stops it, as with any scrollable.
                 activeScroller?.stop()
+                // Touching a strip hands control to the user, so the widget stops
+                // following the reader's own scrolling and never fights the finger.
+                if (activeScroller != null) onUserInteracted?.invoke()
                 return true
             }
 
@@ -692,12 +702,20 @@ class PassageFinderView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** Maps a y coordinate onto the strip that owns horizontal drags there. */
-    private fun scrollerAt(y: Float): LaneScroller? = when {
-        y >= bookRect.top && y <= bookRect.bottom -> bookScroll
-        chapterRect.height() > 0.5f && y >= chapterRect.top && y <= chapterRect.bottom -> chapterScroll
-        verseRect.height() > 0.5f && y >= verseRect.top && y <= verseRect.bottom -> verseScroll
-        else -> null
+    /**
+     * Maps a y coordinate onto the strip that owns it, for both drags and taps.
+     *
+     * Each strip claims a band reaching half way into the gaps on either side, so the
+     * stack has no dead rows between the strips — a finger aimed at a spine but landing a
+     * few dp high still scrolls the books rather than doing nothing, or worse, dismissing.
+     * The book strip's band runs to the bottom edge, absorbing the padding below it.
+     */
+    private fun bandAt(y: Float): LaneScroller? {
+        val margin = metrics.stripSpacing / 2f
+        if (y >= bookRect.top - margin) return bookScroll
+        if (chapterRect.height() > 0.5f && y >= chapterRect.top - margin) return chapterScroll
+        if (verseRect.height() > 0.5f && y >= verseRect.top - margin) return verseScroll
+        return null
     }
 
     private fun flingActiveLane(velocityX: Float) {
@@ -771,68 +789,79 @@ class PassageFinderView(context: Context) : View(context) {
         invalidate()
     }
 
+    /**
+     * Routes a tap.
+     *
+     * A tap that lands anywhere in a strip's band always picks that strip's nearest item;
+     * it can never fall through to dismissing the overlay. That mattered: spines are
+     * separated by a 2dp gap, and a tap landing in one used to miss every branch below
+     * and close the widget, so repeatedly tapping books shut the finder after a few
+     * attempts. The bands also absorb the gaps between strips, so the whole stack is live
+     * and only a tap clearly outside it dismisses.
+     */
     private fun handleTap(x: Float, y: Float) {
         if (!bubbleRect.isEmpty && bubbleRect.contains(x, y)) {
             onConfirm?.invoke()
             return
         }
-        if (!loading && books.isNotEmpty() && y >= bookRect.top && y <= bookRect.bottom) {
-            val index = bookIndexAt(x)
-            if (index >= 0) {
+        when (bandAt(y)) {
+            bookScroll -> {
+                if (loading || books.isEmpty()) return
+                val index = bookIndexAt(x)
                 if (index != state.selectedBookIndex) verseRevealed = false
                 bookScroll.animateTo(bookLane.snapPointFor(index))
                 onBookSelected?.invoke(index)
                 onDrillDown?.invoke()
-                return
             }
-        }
-        if (chapterRect.height() > 0.5f && y >= chapterRect.top && y <= chapterRect.bottom) {
-            val index = cellIndexAt(chapterLane, x, metrics.chapterCellSize, metrics.chapterMaxScale)
-            if (index >= 0) {
+            chapterScroll -> {
+                val index = cellIndexAt(chapterLane, x)
                 chapterScroll.animateTo(chapterLane.snapPointFor(index))
                 verseRevealed = true
                 onChapterSelected?.invoke(index + 1)
                 onDrillDown?.invoke()
-                return
             }
-        }
-        if (verseRect.height() > 0.5f && y >= verseRect.top && y <= verseRect.bottom) {
-            val index = cellIndexAt(verseLane, x, metrics.verseCellSize, metrics.verseMaxScale)
-            if (index >= 0) {
+            verseScroll -> {
+                val index = cellIndexAt(verseLane, x)
                 val alreadySelected = index + 1 == state.selectedVerse
                 verseScroll.animateTo(verseLane.snapPointFor(index))
                 onVerseSelected?.invoke(index + 1)
                 // Tapping the verse that is already selected commits it.
                 if (alreadySelected) onConfirm?.invoke()
-                return
             }
+            // Clear of the strips — dismiss, as the full-screen target behind the strips
+            // did in the Compose implementation.
+            else -> onDismiss?.invoke()
         }
-        // Nothing under the finger — the tap falls through to dismissing the overlay,
-        // as it did in Compose where the strips sat over a full-screen dismiss target.
-        onDismiss?.invoke()
-    }
-
-    /** Index of the spine under [x], or -1. Uses the magnified widths from the last layout. */
-    private fun bookIndexAt(x: Float): Int {
-        for (i in bookLane.visibleRange(width.toFloat())) {
-            if (x >= bookLane.lefts[i] && x <= bookLane.lefts[i] + bookLane.widths[i]) return i
-        }
-        return -1
     }
 
     /**
-     * Index of the numeric cell under [x], or -1.
-     *
-     * Cells keep a constant pitch but are drawn magnified, so the nearest cell centre is
-     * the right answer as long as the finger is within that cell's drawn half-width.
+     * The spine nearest [x]. Falls back to the closest spine centre rather than reporting
+     * a miss, so the gap between two spines belongs to whichever is nearer.
      */
-    private fun cellIndexAt(lane: UniformLane, x: Float, cellSize: Float, maxScale: Float): Int {
-        if (lane.itemCount <= 0) return -1
-        val offset = x - centreX()
-        val index = lane.nearestIndex(lane.scroll + offset)
-        val distance = abs(lane.offsetFromCentre(index) - offset)
-        return if (distance <= cellSize * maxScale * metrics.cellMaxAspect / 2f) index else -1
+    private fun bookIndexAt(x: Float): Int {
+        val range = bookLane.visibleRange(width.toFloat())
+        if (range.isEmpty()) return state.selectedBookIndex
+        var nearest = range.first
+        var nearestDistance = Float.MAX_VALUE
+        for (i in range) {
+            val left = bookLane.lefts[i]
+            val right = left + bookLane.widths[i]
+            if (x in left..right) return i
+            val distance = minOf(abs(x - left), abs(x - right))
+            if (distance < nearestDistance) {
+                nearestDistance = distance
+                nearest = i
+            }
+        }
+        return nearest
     }
+
+    /**
+     * The numeric cell nearest [x], clamped to the lane. Cells tile their strip without
+     * gaps, so the nearest centre is always the item the user meant.
+     */
+    private fun cellIndexAt(lane: UniformLane, x: Float): Int =
+        lane.nearestIndex(lane.scroll + (x - centreX()))
 
     // ---- Accessibility -------------------------------------------------------------
 

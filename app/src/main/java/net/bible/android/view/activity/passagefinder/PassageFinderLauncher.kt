@@ -88,6 +88,10 @@ class PassageFinderLauncher(
      * nothing the user is waiting on.
      */
     fun warmUp() {
+        // Build and attach the overlay now, so the tap itself never has to add a view to
+        // the DrawerLayout — that would lay the whole hierarchy out again, and the Bible
+        // WebView drops an in-flight fling when it is laid out.
+        ensureView()
         if (dataSource.cachedBooks() != null) return
         activity.lifecycleScope.launch {
             try {
@@ -143,7 +147,6 @@ class PassageFinderLauncher(
 
         startCollecting(finder)
         finder.show()
-        finder.bringToFront()
         return true
     }
 
@@ -163,6 +166,17 @@ class PassageFinderLauncher(
 
     val isVisible: Boolean
         get() = view?.isShowing == true
+
+    /**
+     * Tells the widget the reader has scrolled to a new verse.
+     *
+     * Driven from the activity's existing CurrentVerseChangedEvent handler, which already
+     * fires for every scroll the Bible view reports. The widget ignores it once the user
+     * has touched a strip.
+     */
+    fun onCurrentVerseChanged() {
+        if (isVisible) viewModel.followCurrentVerse()
+    }
 
     /** Mirrors ViewModel state into the view and routes confirmed selections. */
     private fun startCollecting(finder: PassageFinderView) {
@@ -184,7 +198,7 @@ class PassageFinderLauncher(
     private fun ensureView(): PassageFinderView {
         view?.let { return it }
         val finder = PassageFinderView(activity).apply {
-            visibility = View.GONE
+            visibility = View.INVISIBLE
             onDismiss = { this@PassageFinderLauncher.hide() }
             // Don't hide() here: the selectionConfirmed collector navigates and then hides
             // the view itself. Cancelling navigationJob early would race the emission and
@@ -195,10 +209,11 @@ class PassageFinderLauncher(
             onVerseSelected = { viewModel.onVerseSelected(it) }
             onDrillDown = { viewModel.drillDown() }
             onDrillUp = { viewModel.drillUp() }
+            onUserInteracted = { viewModel.markInteracted() }
         }
-        // Append rather than insert at a fixed index — show() calls bringToFront() to
-        // raise it, so the insertion position doesn't matter and appending is robust as
-        // the layout evolves.
+        // Append rather than insert at a fixed index — it is raised explicitly below, so
+        // the insertion position doesn't matter and appending is robust as the layout
+        // evolves.
         activity.binding.drawerLayout.addView(
             finder,
             ViewGroup.LayoutParams(
@@ -206,6 +221,9 @@ class PassageFinderLauncher(
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
+        // Raised once, here. Doing it on every open would call requestLayout again and
+        // undo the point of attaching the view ahead of time.
+        finder.bringToFront()
         view = finder
         return finder
     }
