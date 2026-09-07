@@ -188,6 +188,9 @@ class PassageFinderView(context: Context) : View(context) {
     private var downY = 0f
     private var lastX = 0f
 
+    /** True between an accepted touch-down and the end of that gesture. */
+    private var gestureActive = false
+
     /** True while the current gesture is being handed to the reader behind the overlay. */
     private var readerGesture = false
 
@@ -310,7 +313,14 @@ class PassageFinderView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** True while the overlay is on screen, including during the exit animation. */
+    /**
+     * True while the overlay is open and interactive.
+     *
+     * Deliberately false for the duration of the exit animation, even though the stack is
+     * still sliding down on screen: once dismissed it must stop claiming touches, stop
+     * publishing accessibility nodes, and stop counting as open for the fling gesture
+     * that reopens it. It is not a question of whether any pixels are visible.
+     */
     val isShowing: Boolean
         get() = visibility == VISIBLE && !dismissing
 
@@ -622,10 +632,39 @@ class PassageFinderView(context: Context) : View(context) {
 
     private fun centreX(): Float = (contentLeft + contentRight) / 2f
 
+    /**
+     * Recomputes the layout rects and spine positions that drawing normally produces.
+     *
+     * Touch routing and the accessibility tree both need geometry matching what is on
+     * screen, and both can run before the next frame. It is a handful of rect
+     * assignments plus one O(books) sweep, and allocates nothing.
+     */
+    private fun ensureGeometry() {
+        layoutStrips()
+        if (books.isNotEmpty()) bookLane.layout(centreX())
+    }
+
     // ---- Touch ---------------------------------------------------------------------
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!isShowing) return false
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            if (!isShowing) return false
+            gestureActive = true
+        } else if (!gestureActive) {
+            return false
+        }
+        // A gesture already under way is always seen through to its end, even if the
+        // widget is dismissed mid-drag — which happens routinely, since swiping down at
+        // book level dismisses while the finger is still down. Dropping the rest of the
+        // gesture would leak the velocity tracker and strand [isBeingTouched] set,
+        // silently suspending reader tracking for the rest of the session.
+
+        // Hit-testing reads geometry that is otherwise only produced while drawing, so
+        // bring it up to date first: a touch arriving before the first frame after a show
+        // or a size change would otherwise test against empty rects, where every y sits
+        // inside the book strip and nothing reaches the reader.
+        ensureGeometry()
+
         val x = event.x
         // Undo the slide so hit-testing works against the laid-out positions.
         val y = event.y - slideOffset
@@ -741,6 +780,7 @@ class PassageFinderView(context: Context) : View(context) {
         activeScroller = null
         readerGesture = false
         isBeingTouched = false
+        gestureActive = false
         lockedVertical = null
         invalidate()
     }
@@ -947,9 +987,9 @@ class PassageFinderView(context: Context) : View(context) {
     internal fun accessibilityNodes(): List<A11yNode> {
         if (!isShowing || books.isEmpty()) return emptyList()
         val nodes = ArrayList<A11yNode>()
+        ensureGeometry()
         val offset = slideOffset.toInt()
 
-        bookLane.layout(centreX())
         for (i in bookLane.visibleRange(width.toFloat())) {
             val left = bookLane.lefts[i]
             val top = bookRect.bottom - metrics.spineMaxHeight - metrics.spineFocusOvershoot
@@ -1062,8 +1102,9 @@ class PassageFinderView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         cancelScrolls()
-        velocityTracker?.recycle()
-        velocityTracker = null
+        // Detaching mid-gesture means no lift ever arrives, so clear the gesture state
+        // here too rather than leaving flags set for whenever the view is attached again.
+        endGesture()
     }
 
     // ---- Lane scrolling ------------------------------------------------------------
