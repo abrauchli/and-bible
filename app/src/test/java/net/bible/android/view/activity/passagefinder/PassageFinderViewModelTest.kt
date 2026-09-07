@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -36,13 +37,15 @@ import org.crosswire.jsword.versification.system.Versifications
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 /**
- * Unit tests for [PassageFinderViewModel], verifying that confirmSelection()
- * correctly emits a [Verse] matching the current UI state.
+ * Unit tests for [PassageFinderViewModel]: the selection state machine, the clamping it
+ * applies when a book or chapter change makes the current selection impossible, and the
+ * reader-follow path that keeps the widget showing whatever is on screen behind it.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PassageFinderViewModelTest {
@@ -90,6 +93,73 @@ class PassageFinderViewModelTest {
         books,
         IntArray(books.size) { dataSource.getChapterCount(books[it].book) },
     )
+
+    // ---- followCurrentVerse: the widget tracking the reader scrolling behind it -------
+
+    @Test
+    fun `followCurrentVerse moves the selection and the open-book marker to the reader`() = runTest {
+        viewModel.show(bookList())
+        whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.MATT, 5, 9))
+
+        viewModel.followCurrentVerse()
+
+        val state = viewModel.uiState.value
+        assertEquals(3, state.selectedBookIndex)
+        assertEquals(5, state.selectedChapter)
+        assertEquals(9, state.selectedVerse)
+        // The marker for "what the reader is actually showing" has to move too, or it
+        // would keep pointing at the book the reader has scrolled away from.
+        assertEquals(3, state.openBookIndex)
+        assertEquals(28, state.chapterCount)
+    }
+
+    @Test
+    fun `followCurrentVerse is ignored while the widget is hidden`() = runTest {
+        whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.MATT, 5, 9))
+
+        viewModel.followCurrentVerse()
+
+        assertFalse(viewModel.uiState.value.visible)
+        assertEquals(0, viewModel.uiState.value.selectedBookIndex)
+    }
+
+    @Test
+    fun `followCurrentVerse ignores a book the module does not contain`() = runTest {
+        viewModel.show(bookList())
+        viewModel.onBookSelected(1)
+        // Reader is on a book absent from this module's list — leave the widget alone
+        // rather than snapping it to an arbitrary index.
+        whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.JOHN, 3, 16))
+
+        viewModel.followCurrentVerse()
+
+        assertEquals(1, viewModel.uiState.value.selectedBookIndex)
+    }
+
+    @Test
+    fun `followCurrentVerse clamps a verse beyond the chapter`() = runTest {
+        viewModel.show(bookList())
+        whenever(dataSource.getVerseCount(eq(BibleBook.LEV), eq(2))).thenReturn(16)
+        whenever(dataSource.getCurrentVerse()).thenReturn(Verse(v11n, BibleBook.LEV, 2, 99))
+
+        viewModel.followCurrentVerse()
+
+        val state = viewModel.uiState.value
+        assertEquals(2, state.selectedBookIndex)
+        assertEquals(16, state.selectedVerse)
+    }
+
+    @Test
+    fun `followCurrentVerse leaves state untouched when nothing changed`() = runTest {
+        viewModel.show(bookList())
+        val before = viewModel.uiState.value
+
+        viewModel.followCurrentVerse()
+
+        // Same instance, not merely an equal copy: re-emitting would make the view treat
+        // it as a fresh selection and re-centre strips that are already in place.
+        assertSame(before, viewModel.uiState.value)
+    }
 
     @Test
     fun `confirmSelection emits Verse with correct book chapter verse`() = runTest {
@@ -143,30 +213,46 @@ class PassageFinderViewModelTest {
 
     @Test
     fun `show clears stale preview verse text`() = runTest {
+        // The stale value has to be real, or this test passes against a show() that never
+        // clears anything: an unstubbed getVerseText leaves the preview null throughout.
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+
+        // Let the ViewModel's verse-text collector actually start before emitting into it.
+        // Its flow has no replay, so a selection made while the collector is still only
+        // queued on the test dispatcher would be dropped and the preview would stay null —
+        // which would quietly turn this into a test that asserts nothing.
+        testDispatcher.scheduler.advanceUntilIdle()
+
         viewModel.show(bookList())
         viewModel.drillDown()                      // BOOK -> CHAPTER
         viewModel.drillDown()                      // CHAPTER -> VERSE
         viewModel.onVerseSelected(5)
         testDispatcher.scheduler.advanceUntilIdle()
-        // Force a known stale value so we can detect whether show() clears it.
-        // (In real usage the debounced flow would have populated this.)
-        viewModel.dismiss()
+        assertEquals("In the beginning", viewModel.previewVerseText.value)
 
+        viewModel.dismiss()
         viewModel.show(bookList())
+
         assertEquals(null, viewModel.previewVerseText.value)
     }
 
     @Test
     fun `confirmSelection does nothing when books list is empty`() = runTest {
         // Don't call show() -- books list is empty, selectedBookIndex is 0 but out of range
-        val state = viewModel.uiState.value
-        assertTrue(state.books.isEmpty())
+        assertTrue(viewModel.uiState.value.books.isEmpty())
+
+        // Actually watch the channel: asserting on `visible` alone would pass even if a
+        // verse were emitted, since it was never true to begin with.
+        val emissions = mutableListOf<Verse>()
+        val collector = launch { viewModel.selectionConfirmed.collect { emissions.add(it) } }
+        testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.confirmSelection()
         testDispatcher.scheduler.advanceUntilIdle()
 
-        // Verify no emission occurred and no crash -- visible should still be false
+        assertTrue("no verse may be confirmed with no books to confirm", emissions.isEmpty())
         assertFalse(viewModel.uiState.value.visible)
+        collector.cancel()
     }
 
     @Test

@@ -57,8 +57,6 @@ data class PassageFinderUiState(
     val chapterCount: Int = 0,
     /** Number of verses in the currently selected chapter. */
     val verseCount: Int = 0,
-    /** Whether the user has interacted (scrolled) since the widget opened. */
-    val hasInteracted: Boolean = false,
     /** Whether the verse-preview bubble should show. True after any chapter/verse scroll;
      *  cleared when the book changes (book scroll has no preview). */
     val showPreview: Boolean = false,
@@ -166,7 +164,6 @@ class PassageFinderViewModel(
             selectedVerse = currentVerse.verse.coerceIn(1, verseCount),
             chapterCount = chapterCount,
             verseCount = verseCount,
-            hasInteracted = false,
         )
     }
 
@@ -209,7 +206,7 @@ class PassageFinderViewModel(
 
     /** Hide the widget. */
     fun dismiss() {
-        _uiState.value = _uiState.value.copy(visible = false, hasInteracted = false, showPreview = false)
+        _uiState.value = _uiState.value.copy(visible = false, showPreview = false)
     }
 
     /**
@@ -248,7 +245,6 @@ class PassageFinderViewModel(
                 selectedVerse = effectiveVerse,
                 chapterCount = chapterCount,
                 verseCount = verseCount,
-                hasInteracted = true,
                 // Book change invalidates any verse-level preview.
                 showPreview = if (bookChanged) false else state.showPreview,
             )
@@ -358,7 +354,6 @@ class PassageFinderViewModel(
             verseCount = verseCount,
             currentLevel = if (state.currentLevel == NavigationLevel.VERSE)
                 NavigationLevel.CHAPTER else state.currentLevel,
-            hasInteracted = true,
             showPreview = true,
         )
         verseSelectionFlow.tryEmit(Triple(book.book, chapter, 1))
@@ -369,7 +364,6 @@ class PassageFinderViewModel(
         val state = _uiState.value
         _uiState.value = state.copy(
             selectedVerse = verse,
-            hasInteracted = true,
             showPreview = true,
         )
         val book = state.books.getOrNull(state.selectedBookIndex)?.book ?: return

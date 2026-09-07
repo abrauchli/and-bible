@@ -27,7 +27,7 @@ import android.view.View
  *
  * Uses [View.performHapticFeedback] which requires no VIBRATE permission and
  * automatically respects the system haptic feedback accessibility setting
- * (HAPT-05). All ticks are throttled to a minimum interval of [throttleMs]
+ *. All ticks are throttled to a minimum interval of [throttleMs]
  * to prevent unpleasant buzzing during fast flings.
  */
 class HapticController(private val view: View) {

@@ -30,9 +30,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * This class breaks that loop.
  */
 class ScrollCoordinator {
-    // Counter rather than a boolean so overlapping programmatic scrolls (e.g. a new
-    // LaunchedEffect starting before the previous one's `finally` runs) don't let an
-    // earlier exit clear the flag while a later scroll is still in flight.
+    // Counter rather than a boolean so overlapping programmatic scrolls (a re-centre
+    // retargeted while the previous one is still running) don't let an earlier exit clear
+    // the flag while a later scroll is still in flight.
     private val programmaticScrollCount = AtomicInteger(0)
 
     /** True while at least one programmatic scroll is in progress (suppresses scroll-settle callbacks). */
@@ -43,17 +43,17 @@ class ScrollCoordinator {
     private var scrollTriggeredSelection: Boolean = false
 
     /**
-     * Called by the scroll-settle callback before notifying the parent of a new selection.
-     * Marks the upcoming selection change as scroll-triggered so the re-center
-     * LaunchedEffect knows to skip.
+     * Called by the scroll-settle callback before notifying the state layer of a new
+     * selection. Marks the upcoming selection change as scroll-triggered so the re-centre
+     * that follows it knows to skip.
      */
     fun markScrollSettled() {
         scrollTriggeredSelection = true
     }
 
     /**
-     * Called by the re-center LaunchedEffect when selection changes.
-     * Returns true if the re-center should proceed (external change),
+     * Called from the re-centre path when the selection changes.
+     * Returns true if the re-centre should proceed (external change),
      * false if it should be skipped (scroll-triggered change).
      */
     fun shouldRecenter(): Boolean {
@@ -90,5 +90,19 @@ class ScrollCoordinator {
             if (current <= 0) return
             if (programmaticScrollCount.compareAndSet(current, current - 1)) return
         }
+    }
+
+    /**
+     * Clears all coordination state, for reuse across an open/close cycle.
+     *
+     * [markScrollSettled] is normally paired with the [shouldRecenter] of the re-centre it
+     * suppresses, but the widget can close in between — a settle in one frame and a back
+     * press before the state change is delivered. The flag would then survive into the
+     * next session and swallow its first re-centre, leaving the strip parked somewhere the
+     * state does not agree with.
+     */
+    fun reset() {
+        scrollTriggeredSelection = false
+        programmaticScrollCount.set(0)
     }
 }

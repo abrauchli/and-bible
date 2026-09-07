@@ -309,6 +309,29 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
      *
      * @param borderAlpha 0 hides the selection border entirely.
      */
+    /**
+     * Width the plate for [text] is drawn at, magnification included.
+     *
+     * Exposed because touch and accessibility have to agree with what is on screen: cells
+     * sit on a small constant pitch but the centred one is drawn nearly three times that,
+     * so anything deriving a cell's extent from the pitch would hand most of the focused
+     * cell's visible area to its neighbour.
+     *
+     * Width comes from the digit advance rather than measureText, so every number with
+     * the same digit count gets the same plate even on OEM fonts with proportional
+     * figures — otherwise "111" and "888" would sit in visibly different boxes as they
+     * scrolled past. Measured bold, the widest the cell ever draws, so the plate does not
+     * twitch when a cell goes bold on reaching the centre.
+     */
+    fun cellWidth(text: String, cellSize: Float, baseTextSize: Float, scale: Float): Float {
+        val height = cellSize * scale
+        val padding = metrics.cellTextPaddingRatio * height
+        val maxWidth = metrics.cellMaxAspect * height
+        val textWidth = text.length * digitAdvanceRatio * quantiseTextSize(baseTextSize * scale)
+        return if (textWidth + padding * 2f > maxWidth) maxWidth
+        else maxOf(height, textWidth + padding * 2f)
+    }
+
     fun drawNumberCell(
         canvas: Canvas,
         text: String,
@@ -328,19 +351,12 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         val padding = metrics.cellTextPaddingRatio * height
         val maxWidth = metrics.cellMaxAspect * height
 
-        // Width from the digit advance rather than measureText, so every number with the
-        // same digit count gets the same plate even on OEM fonts with proportional
-        // figures — otherwise "111" and "888" would sit in visibly different boxes as
-        // they scrolled past. Measured bold, the widest the cell ever draws, so the plate
-        // does not twitch when a cell goes bold on reaching the centre.
         val textWidth = text.length * digitAdvanceRatio * textSize
-        val width = if (textWidth + padding * 2f > maxWidth) {
+        if (textWidth + padding * 2f > maxWidth) {
             // Only reachable at extreme font scales; shrink the text to fit the cap.
             textSize = quantiseTextSize(textSize * (maxWidth - padding * 2f) / textWidth)
-            maxWidth
-        } else {
-            maxOf(height, textWidth + padding * 2f)
         }
+        val width = cellWidth(text, cellSize, baseTextSize, scale)
 
         val halfWidth = width / 2f
         scratchRect.set(

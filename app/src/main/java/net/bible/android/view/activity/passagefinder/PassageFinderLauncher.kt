@@ -29,14 +29,16 @@ import kotlinx.coroutines.launch
 import net.bible.android.control.navigation.NavigationControl
 import net.bible.android.control.page.PageControl
 import net.bible.android.control.passagefinder.PassageFinderDataSource
+import net.bible.android.view.activity.page.BibleView
 import net.bible.android.view.activity.page.MainBibleActivity
 
 /**
  * Owns the passage finder overlay: creates its view, wires it to the ViewModel, and
  * routes a confirmed selection into the Bible view.
  *
- * The overlay is a plain [PassageFinderView] added to the DrawerLayout, so it floats
- * above everything including the toolbar and the navigation drawer.
+ * The overlay is a plain [PassageFinderView] added to the activity's content frame, so it
+ * floats above everything including the toolbar and the navigation drawer. See [ensureView]
+ * for why it must not live inside the DrawerLayout itself.
  *
  * The important thing this class does is keep disk work off the tap path. Loading a
  * module's book list means asking JSword whether the module contains each book, which on
@@ -113,6 +115,13 @@ class PassageFinderLauncher(
      *   out to be empty.
      */
     fun show(): Boolean {
+        // Only Bibles and commentaries are navigated by book/chapter/verse. Every other
+        // page type has its own chooser, and `currentPassageDocument` quietly falls back
+        // to the Bible for them — so without this the finder would open over a dictionary
+        // and "confirming" would move the Bible in the background while the dictionary sat
+        // unchanged, looking to the user like nothing happened.
+        if (!pageControl.currentPageManager.isVersePageShown) return false
+
         val cached = dataSource.cachedBooks()
         if (cached != null && cached.books.isEmpty()) return false
 
@@ -172,14 +181,18 @@ class PassageFinderLauncher(
      * Tells the widget the reader has scrolled to a new verse.
      *
      * Driven from the activity's existing CurrentVerseChangedEvent handler, which already
-     * fires for every scroll the Bible view reports. The widget ignores it once the user
-     * has touched a strip.
+     * fires for every scroll the Bible view reports, so the widget keeps showing the
+     * passage actually on screen behind it.
+     *
+     * Ignored while the widget itself is in motion. A finger on a strip is the obvious
+     * case, but a fling the user has just released matters as much: the reader's verse
+     * reports are throttled on the web side and the last one lands after the text has
+     * physically stopped, so a report can arrive a beat *after* the user has flicked a
+     * strip. Acting on it would cancel their fling and drag the strip back.
      */
     fun onCurrentVerseChanged() {
         val finder = view ?: return
-        // Skip only while a finger is on the widget itself, so an update arriving
-        // mid-drag cannot pull a strip out from under it.
-        if (finder.isShowing && !finder.isBeingTouched) viewModel.followCurrentVerse()
+        if (finder.isShowing && finder.isIdle) viewModel.followCurrentVerse()
     }
 
     /**
@@ -197,13 +210,7 @@ class PassageFinderLauncher(
      */
     private fun forwardTouchToReader(event: MotionEvent) {
         val overlay = view ?: return
-        val reader = try {
-            activity.documentViewManager.documentView
-        } catch (e: Exception) {
-            // The reader view may not be built yet; nothing to forward to.
-            Log.d(TAG, "Could not forward touch to reader", e)
-            return
-        }
+        val reader = readerUnder(event) ?: return
         val overlayLocation = IntArray(2).also { overlay.getLocationInWindow(it) }
         val readerLocation = IntArray(2).also { reader.getLocationInWindow(it) }
         val copy = MotionEvent.obtain(event)
@@ -216,6 +223,35 @@ class PassageFinderLauncher(
         } finally {
             copy.recycle()
         }
+    }
+
+    /**
+     * The Bible view under the touch point.
+     *
+     * In a split workspace this is not necessarily the active window's. The overlay
+     * swallows the real ACTION_DOWN, so the app never gets its usual chance to make the
+     * touched window active; forwarding to the active window regardless would scroll the
+     * wrong half of the split, or nothing at all when the point lies outside it. Falls
+     * back to the active window's view if the point is over no window at all.
+     */
+    private fun readerUnder(event: MotionEvent): BibleView? = try {
+        val x = event.rawX.toInt()
+        val y = event.rawY.toInt()
+        val location = IntArray(2)
+        activity.windowControl.windowRepository.visibleWindows
+            .asSequence()
+            .map { activity.bibleViewFactory.getOrCreateBibleView(it) }
+            .firstOrNull { reader ->
+                reader.getLocationOnScreen(location)
+                reader.isShown &&
+                    x >= location[0] && x < location[0] + reader.width &&
+                    y >= location[1] && y < location[1] + reader.height
+            }
+            ?: activity.documentViewManager.documentView
+    } catch (e: Exception) {
+        // The reader views may not be built yet; nothing to forward to.
+        Log.d(TAG, "Could not resolve the reader under the touch", e)
+        null
     }
 
     /**
@@ -267,10 +303,18 @@ class PassageFinderLauncher(
             onWidgetTouched = { stopReaderScrolling() }
             onReaderTouch = { event -> forwardTouchToReader(event) }
         }
-        // Append rather than insert at a fixed index — it is raised explicitly below, so
-        // the insertion position doesn't matter and appending is robust as the layout
-        // evolves.
-        activity.binding.drawerLayout.addView(
+        // Attached to the activity's content frame, as a sibling *above* the DrawerLayout
+        // rather than inside it.
+        //
+        // Putting it inside the DrawerLayout breaks the navigation drawer outright.
+        // DrawerLayout treats any child without a drawer gravity as a content view, so an
+        // overlay added after the NavigationView becomes the topmost content view; taps on
+        // the open drawer then hit-test to the overlay, and DrawerLayout reads them as
+        // "tapped the content while the drawer is open" and just closes the drawer. Every
+        // drawer item — Bookmarks, History, Application preferences — stopped working as
+        // soon as the feature was enabled, which also left no way to switch it back off.
+        val contentFrame = activity.findViewById<ViewGroup>(android.R.id.content)
+        contentFrame.addView(
             finder,
             ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

@@ -124,6 +124,16 @@ class PassageFinderView(context: Context) : View(context) {
     /** True between the tap and the book list arriving; draws the skeleton. */
     private var loading = false
 
+    /**
+     * "1", "2", ... shared by both number strips, and the bubble's reference line.
+     *
+     * Both are otherwise rebuilt every frame — around fifty short-lived strings per frame
+     * while a strip is flinging — which is exactly the steady garbage the rest of this
+     * widget is written to avoid.
+     */
+    private var cellLabels: Array<String> = emptyArray()
+    private var bubbleReference: String = ""
+
     // ---- View-local interaction state ----------------------------------------------
 
     /**
@@ -203,6 +213,17 @@ class PassageFinderView(context: Context) : View(context) {
     var isBeingTouched = false
         private set
 
+    /**
+     * True when no finger is on the widget and none of its strips are still moving.
+     *
+     * The reader-follow update uses this rather than [isBeingTouched] alone: a released
+     * fling is still the user's gesture playing out, and letting a late scroll report
+     * re-centre a strip mid-flight would cancel the throw and pull it back.
+     */
+    val isIdle: Boolean
+        get() = !isBeingTouched && !bookScroll.isMoving &&
+            !chapterScroll.isMoving && !verseScroll.isMoving
+
     /** null until the gesture commits to an axis; then true for vertical. */
     private var lockedVertical: Boolean? = null
     private var cumulativeVertical = 0f
@@ -275,7 +296,15 @@ class PassageFinderView(context: Context) : View(context) {
             recenter(verseScroll, newState.selectedVerse - 1, animate = animate)
         }
 
+        val book = books.getOrNull(newState.selectedBookIndex)
+        if (book != null) {
+            bubbleReference = "${book.shortName} ${newState.selectedChapter}:${newState.selectedVerse}"
+        }
+
         bubbleAlpha.durationMs = if (newState.showPreview) BUBBLE_FADE_IN_MS else BUBBLE_FADE_OUT_MS
+        // The strips have moved, so TalkBack's cached node bounds no longer describe what
+        // is on screen. Without this its focus rectangles drift away from the cells.
+        a11y.invalidateRoot()
         invalidate()
     }
 
@@ -296,6 +325,17 @@ class PassageFinderView(context: Context) : View(context) {
         bookScrolling = false
         chapterScrolling = false
         verseRevealed = true
+
+        // Start every open from a clean slate. The launcher cancels its state collector
+        // before dismissing the ViewModel, so the view never receives the `visible=false`
+        // render: without this reset the previous session's state would still be here,
+        // which would animate the strips in from a stale selection instead of snapping,
+        // and could leave a scroll-settle flag set that silently swallows the first
+        // re-centre of the new session.
+        state = PassageFinderUiState()
+        bookScroll.coordinator.reset()
+        chapterScroll.coordinator.reset()
+        verseScroll.coordinator.reset()
         chapterHeight.snapTo(metrics.chapterStripHeight)
         chapterAlpha.snapTo(1f)
         verseHeight.snapTo(metrics.verseStripHeight)
@@ -575,7 +615,7 @@ class PassageFinderView(context: Context) : View(context) {
             val sizeProximity = proximity * proximity * proximity * proximity
             painter.drawNumberCell(
                 canvas = canvas,
-                text = (i + 1).toString(),
+                text = cellLabel(i + 1),
                 centreX = centreX + lane.offsetFromCentre(i),
                 centreY = centreY,
                 cellSize = cellSize,
@@ -598,9 +638,10 @@ class PassageFinderView(context: Context) : View(context) {
         // cover its inner neighbour, and the wider three-digit plates make that obvious.
         val selectedIndex = selected - 1
         for (distance in maxOf(centred - range.first, range.last - centred) downTo 1) {
-            for (i in intArrayOf(centred - distance, centred + distance)) {
-                if (i != selectedIndex) drawCell(i)
-            }
+            // Written out rather than looping over a pair, so no array is allocated per
+            // ring per strip per frame.
+            if (centred - distance != selectedIndex) drawCell(centred - distance)
+            if (centred + distance != selectedIndex) drawCell(centred + distance)
         }
         // Committed selection, then the visual centre on top of everything.
         if (selectedIndex != centred) drawCell(selectedIndex)
@@ -623,14 +664,24 @@ class PassageFinderView(context: Context) : View(context) {
         }
     }
 
+    /** The label for [number], reused rather than rebuilt on every frame. */
+    private fun cellLabel(number: Int): String {
+        if (number > cellLabels.size) {
+            // Grows to the largest number either strip has asked for; the ceiling is the
+            // longest book in any supported versification, so this settles immediately.
+            cellLabels = Array(maxOf(number, MIN_LABEL_CACHE)) { (it + 1).toString() }
+        }
+        return cellLabels[number - 1]
+    }
+
     private fun drawBubble(canvas: Canvas) {
         val alpha = bubbleAlpha.value
         if (alpha <= 0.01f) {
             bubbleRect.setEmpty()
             return
         }
-        val book = books.getOrNull(state.selectedBookIndex) ?: return
-        val reference = "${book.shortName} ${state.selectedChapter}:${state.selectedVerse}"
+        books.getOrNull(state.selectedBookIndex) ?: return
+        val reference = bubbleReference
         val maxWidth = minOf(metrics.bubbleMaxWidth, contentRight - contentLeft)
         // The bubble sits a gap above the verse strip, plus its own bottom padding —
         // matching the Compose column's spacing plus the bubble's own bottom padding.
@@ -931,14 +982,14 @@ class PassageFinderView(context: Context) : View(context) {
                 onDrillDown?.invoke()
             }
             chapterScroll -> {
-                val index = cellIndexAt(chapterLane, x)
+                val index = cellIndexAt(chapterLane, isChapterStrip = true, x = x)
                 chapterScroll.animateTo(chapterLane.snapPointFor(index))
                 verseRevealed = true
                 onChapterSelected?.invoke(index + 1)
                 onDrillDown?.invoke()
             }
             verseScroll -> {
-                val index = cellIndexAt(verseLane, x)
+                val index = cellIndexAt(verseLane, isChapterStrip = false, x = x)
                 val alreadySelected = index + 1 == state.selectedVerse
                 verseScroll.animateTo(verseLane.snapPointFor(index))
                 onVerseSelected?.invoke(index + 1)
@@ -974,11 +1025,49 @@ class PassageFinderView(context: Context) : View(context) {
     }
 
     /**
-     * The numeric cell nearest [x], clamped to the lane. Cells tile their strip without
-     * gaps, so the nearest centre is always the item the user meant.
+     * The numeric cell under [x], tested against the cells as they are actually drawn.
+     *
+     * Rounding by the lane's pitch would be wrong here: cells sit on a small constant
+     * pitch (20 dp for verses) but the centred one is drawn at nearly three times that,
+     * so pitch rounding gives it only the innermost ±10 dp and hands the rest of its
+     * visible area to a neighbour hidden underneath it. Tapping the big centred cell would
+     * then select its neighbour — which above all breaks tap-the-selected-verse-to-confirm.
+     *
+     * Cells are tested topmost-first, in the reverse of the order [drawStrip] paints them,
+     * so overlapping plates resolve to the one the user can actually see. Falling back to
+     * the nearest centre keeps a tap in the thin gaps at the strip's edges meaningful.
      */
-    private fun cellIndexAt(lane: UniformLane, x: Float): Int =
-        lane.nearestIndex(lane.scroll + (x - centreX()))
+    private fun cellIndexAt(lane: UniformLane, isChapterStrip: Boolean, x: Float): Int {
+        val cellSize = if (isChapterStrip) metrics.chapterCellSize else metrics.verseCellSize
+        val minScale = if (isChapterStrip) metrics.chapterMinScale else metrics.verseMinScale
+        val maxScale = if (isChapterStrip) metrics.chapterMaxScale else metrics.verseMaxScale
+        val radius = if (isChapterStrip) metrics.chapterLensRadius else metrics.verseLensRadius
+        val textSize = if (isChapterStrip) metrics.chapterTextSize else metrics.verseTextSize
+        val centre = centreX()
+        val centred = lane.nearestIndex()
+        val range = lane.visibleRange(width.toFloat(), cellSize * maxScale * metrics.cellMaxAspect)
+        if (range.isEmpty()) return centred
+
+        fun hits(i: Int): Boolean {
+            if (i !in range) return false
+            val proximity = lane.proximity(i, radius)
+            val sizeProximity = proximity * proximity * proximity * proximity
+            val scale = lerp(minScale, maxScale, sizeProximity)
+            val half = painter.cellWidth(cellLabel(i + 1), cellSize, textSize, scale) / 2f
+            val cellCentre = centre + lane.offsetFromCentre(i)
+            return x >= cellCentre - half && x <= cellCentre + half
+        }
+
+        if (hits(centred)) return centred
+        // The committed selection is painted above the rings too, so it outranks them.
+        val selectedIndex = (if (isChapterStrip) state.selectedChapter else state.selectedVerse) - 1
+        if (selectedIndex != centred && hits(selectedIndex)) return selectedIndex
+        for (distance in 1..maxOf(centred - range.first, range.last - centred)) {
+            if (hits(centred - distance)) return centred - distance
+            if (hits(centred + distance)) return centred + distance
+        }
+        return lane.nearestIndex(lane.scroll + (x - centre))
+    }
 
     // ---- Accessibility -------------------------------------------------------------
 
@@ -1016,19 +1105,21 @@ class PassageFinderView(context: Context) : View(context) {
         }
 
         addCellNodes(
-            nodes, chapterLane, chapterRect, metrics.chapterCellSize, metrics.chapterMaxScale,
+            nodes, chapterLane, chapterRect, metrics.chapterCellSize, metrics.chapterMinScale,
+            metrics.chapterMaxScale, metrics.chapterLensRadius, metrics.chapterTextSize,
             PassageFinderA11yHelper.ID_CHAPTER_BASE, state.selectedChapter, offset,
         ) { number -> context.getString(R.string.passage_finder_a11y_chapter, number) }
 
         addCellNodes(
-            nodes, verseLane, verseRect, metrics.verseCellSize, metrics.verseMaxScale,
+            nodes, verseLane, verseRect, metrics.verseCellSize, metrics.verseMinScale,
+            metrics.verseMaxScale, metrics.verseLensRadius, metrics.verseTextSize,
             PassageFinderA11yHelper.ID_VERSE_BASE, state.selectedVerse, offset,
         ) { number -> context.getString(R.string.passage_finder_a11y_verse, number) }
 
         if (!bubbleRect.isEmpty) {
             val book = books.getOrNull(state.selectedBookIndex)
             if (book != null) {
-                val reference = "${book.shortName} ${state.selectedChapter}:${state.selectedVerse}"
+                val reference = bubbleReference
                 nodes.add(
                     A11yNode(
                         id = PassageFinderA11yHelper.ID_CONFIRM,
@@ -1051,18 +1142,43 @@ class PassageFinderView(context: Context) : View(context) {
         lane: UniformLane,
         rect: RectF,
         cellSize: Float,
+        minScale: Float,
         maxScale: Float,
+        radius: Float,
+        textSize: Float,
         idBase: Int,
         selectedNumber: Int,
         offset: Int,
         label: (Int) -> String,
     ) {
         if (rect.height() <= 0.5f || lane.itemCount <= 0) return
-        // Half the widest a cell can be drawn, so a three-digit plate's node still covers
-        // the whole plate rather than just its square core.
-        val half = cellSize * maxScale * metrics.cellMaxAspect / 2f
+        val widest = cellSize * maxScale * metrics.cellMaxAspect / 2f
         val centre = centreX()
-        for (i in lane.visibleRange(width.toFloat(), half)) {
+        // Emitted nearest-the-centre first, because the helper resolves a hover to the
+        // first node containing the point and the magnified cells overlap heavily. In
+        // index order a distant cell — whose node is wide because that is how wide it is
+        // drawn — contains the centre point and wins, so explore-by-touch on the focused
+        // verse announced one a couple of places away and activating it drilled into the
+        // wrong chapter.
+        val range = lane.visibleRange(width.toFloat(), widest)
+        if (range.isEmpty()) return
+        val centred = lane.nearestIndex().coerceIn(range.first, range.last)
+        val order = IntArray(range.last - range.first + 1)
+        var n = 0
+        order[n++] = centred
+        var distance = 1
+        while (n < order.size) {
+            if (centred - distance >= range.first) order[n++] = centred - distance
+            if (n < order.size && centred + distance <= range.last) order[n++] = centred + distance
+            distance++
+        }
+        for (i in order) {
+            // Sized by the scale the cell is actually drawn at, so a node covers its own
+            // plate and not its neighbours'.
+            val proximity = lane.proximity(i, radius)
+            val sizeProximity = proximity * proximity * proximity * proximity
+            val scale = lerp(minScale, maxScale, sizeProximity)
+            val half = painter.cellWidth(cellLabel(i + 1), cellSize, textSize, scale) / 2f
             val x = centre + lane.offsetFromCentre(i)
             nodes.add(
                 A11yNode(
@@ -1143,6 +1259,13 @@ class PassageFinderView(context: Context) : View(context) {
         /** Last index that fired a haptic tick, so each boundary ticks once. */
         var lastHapticIndex = -1
 
+        /**
+         * True while this lane is still moving under its own momentum — a fling, or the
+         * snap that follows one. Programmatic re-centres are excluded: those are the
+         * widget catching up with the reader, not a gesture worth protecting.
+         */
+        val isMoving: Boolean get() = flinging || (snapping && !programmatic)
+
         fun dragBy(deltaScreenPx: Float) {
             stopAnimations()
             val scale = lane.localScale.let { if (it > 0.01f) it else 1f }
@@ -1157,6 +1280,17 @@ class PassageFinderView(context: Context) : View(context) {
                 0, 0, (velocityScreenPx * flingVelocityScale).toInt(), 0,
                 Int.MIN_VALUE / 2, Int.MAX_VALUE / 2, 0, 0,
             )
+            if (disableAnimations) {
+                // Every other motion in the widget honours the setting; a fling that still
+                // streamed frames for a couple of seconds would be the one thing left
+                // repainting an e-ink screen. Jump to where the throw would have ended and
+                // settle there, so the gesture keeps its meaning without the animation.
+                val screenDelta = (scroller.finalX - lastScrollerX).toFloat()
+                lane.scroll += screenDelta / lane.localScale.let { if (it > 0.01f) it else 1f }
+                scroller.forceFinished(true)
+                snap()
+                return
+            }
             flinging = true
         }
 
@@ -1261,5 +1395,11 @@ class PassageFinderView(context: Context) : View(context) {
 
         /** A frame longer than this is treated as a stall, not as elapsed animation time. */
         const val MAX_FRAME_SECONDS = 0.064f
+
+        /**
+         * Smallest cell-label cache, sized past the longest chapter and verse counts in
+         * the supported versifications so it is allocated once and never grown.
+         */
+        const val MIN_LABEL_CACHE = 200
     }
 }

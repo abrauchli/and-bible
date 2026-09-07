@@ -33,8 +33,9 @@ private const val TAG = "PassageFinderDataSource"
  * Data source for the PassageFinder widget. Reads book, chapter, and verse metadata
  * from the active Bible translation via JSword APIs.
  *
- * This class is not a Dagger-scoped singleton -- it is created by the ViewModel factory
- * with injected NavigationControl and PageControl references.
+ * This class is not a Dagger-scoped singleton -- [net.bible.android.view.activity.passagefinder.PassageFinderLauncher]
+ * builds one from the activity's NavigationControl and PageControl and hands it to the
+ * ViewModel factory, so its lifetime is the launcher's.
  */
 class PassageFinderDataSource(
     private val navigationControl: NavigationControl,

@@ -168,4 +168,36 @@ class ScrollCoordinatorTest {
         assertTrue(coordinator.programmaticScroll)
         coordinator.endProgrammaticScroll()
     }
+
+    /**
+     * A settle whose re-centre never arrives — the widget closed in between — must not
+     * leave the suppression armed for the next time it opens, or the first re-centre of
+     * the new session is silently swallowed and the strip sits where the last one left it.
+     */
+    @Test
+    fun `reset clears a settle whose re-center never arrived`() {
+        val coordinator = ScrollCoordinator()
+
+        coordinator.markScrollSettled()
+        coordinator.reset()
+
+        assertTrue(
+            "a re-center in the next session must not be swallowed by the previous one",
+            coordinator.shouldRecenter(),
+        )
+    }
+
+    @Test
+    fun `reset clears a programmatic scroll that was never ended`() {
+        val coordinator = ScrollCoordinator()
+
+        coordinator.beginProgrammaticScroll()
+        coordinator.beginProgrammaticScroll()
+        coordinator.reset()
+
+        assertFalse(
+            "an abandoned programmatic scroll must not suppress settles forever",
+            coordinator.programmaticScroll,
+        )
+    }
 }
