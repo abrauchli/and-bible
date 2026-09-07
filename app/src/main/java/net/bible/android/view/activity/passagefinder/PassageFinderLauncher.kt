@@ -18,6 +18,7 @@
 package net.bible.android.view.activity.passagefinder
 
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import androidx.lifecycle.ViewModelProvider
@@ -179,10 +180,46 @@ class PassageFinderLauncher(
     }
 
     /**
-     * Halts the reader's fling when the user pins a finger on the overlay.
+     * Replays a touch from the overlay onto the Bible view underneath.
      *
-     * The overlay consumes the touch, so without this the text would carry on gliding
-     * underneath a finger that plainly means "stop".
+     * The overlay covers the whole screen, so the reader visible above the strips would
+     * otherwise be dead to the touch. Forwarding lets a finger put down there stop the
+     * glide and scroll the text in one motion — including flinging on release, since the
+     * reader receives a genuine, unbroken gesture rather than a synthesised nudge.
+     *
+     * Events go to the Bible view's own touch handling and deliberately not through its
+     * OnTouchListener: that would run the gesture detector, whose fast-fling shortcut
+     * would try to reopen this very widget and whose horizontal swipes would change
+     * chapter under the user.
+     */
+    private fun forwardTouchToReader(event: MotionEvent) {
+        val overlay = view ?: return
+        val reader = try {
+            activity.documentViewManager.documentView
+        } catch (e: Exception) {
+            // The reader view may not be built yet; nothing to forward to.
+            Log.d(TAG, "Could not forward touch to reader", e)
+            return
+        }
+        val overlayLocation = IntArray(2).also { overlay.getLocationInWindow(it) }
+        val readerLocation = IntArray(2).also { reader.getLocationInWindow(it) }
+        val copy = MotionEvent.obtain(event)
+        try {
+            copy.offsetLocation(
+                (overlayLocation[0] - readerLocation[0]).toFloat(),
+                (overlayLocation[1] - readerLocation[1]).toFloat(),
+            )
+            reader.onTouchEvent(copy)
+        } finally {
+            copy.recycle()
+        }
+    }
+
+    /**
+     * Halts the reader's fling when the user pins a finger on the widget itself.
+     *
+     * Only needed for touches the overlay keeps for itself; a touch forwarded to the
+     * reader stops the fling on its own, simply by being a real press.
      */
     private fun stopReaderScrolling() {
         try {
@@ -228,6 +265,7 @@ class PassageFinderLauncher(
                 viewModel.markInteracted()
                 stopReaderScrolling()
             }
+            onReaderTouch = { event -> forwardTouchToReader(event) }
         }
         // Append rather than insert at a fixed index — it is raised explicitly below, so
         // the insertion position doesn't matter and appending is robust as the layout

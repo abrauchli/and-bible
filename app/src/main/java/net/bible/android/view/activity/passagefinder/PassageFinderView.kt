@@ -101,7 +101,13 @@ class PassageFinderView(context: Context) : View(context) {
     var onDrillUp: (() -> Boolean)? = null
 
     /**
-     * Invoked the moment the user puts a finger on the overlay.
+     * Receives touches that land clear of the widget, to be replayed on the reader
+     * showing through above it. Leave null to keep every touch inside the overlay.
+     */
+    var onReaderTouch: ((MotionEvent) -> Unit)? = null
+
+    /**
+     * Invoked the moment the user puts a finger on the widget itself.
      *
      * Signals that the user has taken over: the widget stops following the reader, and
      * the reader stops gliding underneath. Fired for any touch, not only one landing on
@@ -182,6 +188,9 @@ class PassageFinderView(context: Context) : View(context) {
     private var downX = 0f
     private var downY = 0f
     private var lastX = 0f
+
+    /** True while the current gesture is being handed to the reader behind the overlay. */
+    private var readerGesture = false
 
     /** null until the gesture commits to an axis; then true for vertical. */
     private var lockedVertical: Boolean? = null
@@ -622,15 +631,31 @@ class PassageFinderView(context: Context) : View(context) {
                 lockedVertical = null
                 cumulativeVertical = 0f
                 activeScroller = bandAt(y)
-                // Grabbing a moving strip stops it, as with any scrollable.
-                activeScroller?.stop()
-                // A finger down anywhere hands control to the user: the widget stops
-                // following the reader, and the reader stops scrolling beneath it.
-                onUserInteracted?.invoke()
+                val onBubble = !bubbleRect.isEmpty && bubbleRect.contains(x, y)
+                // Anything clear of the strips and the bubble belongs to the reader
+                // showing through above them, so the touch is handed straight to it. That
+                // way a finger put down there stops the glide and scrolls the text in one
+                // motion, instead of the overlay swallowing it.
+                readerGesture = activeScroller == null && !onBubble && onReaderTouch != null
+                if (readerGesture) {
+                    // The real press is what halts the fling — the same thing that
+                    // happens whenever a finger lands on a scrolling page.
+                    onReaderTouch?.invoke(event)
+                } else {
+                    // Grabbing a moving strip stops it, as with any scrollable.
+                    activeScroller?.stop()
+                    // A finger on the widget itself hands control over: it stops
+                    // following the reader, and the reader stops gliding beneath it.
+                    onUserInteracted?.invoke()
+                }
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
+                if (readerGesture) {
+                    onReaderTouch?.invoke(event)
+                    return true
+                }
                 val dx = x - lastX
                 lastX = x
                 if (lockedVertical == null) {
@@ -652,6 +677,24 @@ class PassageFinderView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_UP -> {
+                if (readerGesture) {
+                    val moved = abs(x - downX) > touchSlop || abs(y - downY) > touchSlop
+                    if (moved) {
+                        // A real lift, so the reader flings on from here as usual.
+                        onReaderTouch?.invoke(event)
+                    } else {
+                        // A tap, not a scroll: cancel rather than lift, so the page sees
+                        // no click — it must not select a verse on the way out — and then
+                        // dismiss, which is what a tap outside the strips has always done.
+                        val cancel = MotionEvent.obtain(event)
+                        cancel.action = MotionEvent.ACTION_CANCEL
+                        onReaderTouch?.invoke(cancel)
+                        cancel.recycle()
+                        onDismiss?.invoke()
+                    }
+                    endGesture()
+                    return true
+                }
                 val wasTap = lockedVertical == null &&
                     abs(x - downX) <= touchSlop && abs(y - downY) <= touchSlop
                 if (wasTap) {
@@ -665,6 +708,11 @@ class PassageFinderView(context: Context) : View(context) {
             }
 
             MotionEvent.ACTION_CANCEL -> {
+                if (readerGesture) {
+                    onReaderTouch?.invoke(event)
+                    endGesture()
+                    return true
+                }
                 if (lockedVertical == false) activeScroller?.snap()
                 endGesture()
                 return true
@@ -677,6 +725,7 @@ class PassageFinderView(context: Context) : View(context) {
         velocityTracker?.recycle()
         velocityTracker = null
         activeScroller = null
+        readerGesture = false
         lockedVertical = null
         invalidate()
     }
