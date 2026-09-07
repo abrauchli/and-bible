@@ -100,7 +100,13 @@ class PassageFinderView(context: Context) : View(context) {
     /** Invoked on a downward swipe. Returns false when already at book level, which dismisses. */
     var onDrillUp: (() -> Boolean)? = null
 
-    /** Invoked the moment the user touches a strip, ending any scripture-following. */
+    /**
+     * Invoked the moment the user puts a finger on the overlay.
+     *
+     * Signals that the user has taken over: the widget stops following the reader, and
+     * the reader stops gliding underneath. Fired for any touch, not only one landing on
+     * a strip — pinning a finger anywhere is the universal gesture for "stop".
+     */
     var onUserInteracted: (() -> Unit)? = null
 
     // ---- State mirrored from the ViewModel -----------------------------------------
@@ -618,9 +624,9 @@ class PassageFinderView(context: Context) : View(context) {
                 activeScroller = bandAt(y)
                 // Grabbing a moving strip stops it, as with any scrollable.
                 activeScroller?.stop()
-                // Touching a strip hands control to the user, so the widget stops
-                // following the reader's own scrolling and never fights the finger.
-                if (activeScroller != null) onUserInteracted?.invoke()
+                // A finger down anywhere hands control to the user: the widget stops
+                // following the reader, and the reader stops scrolling beneath it.
+                onUserInteracted?.invoke()
                 return true
             }
 

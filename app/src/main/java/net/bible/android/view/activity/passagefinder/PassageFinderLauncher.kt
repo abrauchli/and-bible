@@ -178,6 +178,21 @@ class PassageFinderLauncher(
         if (isVisible) viewModel.followCurrentVerse()
     }
 
+    /**
+     * Halts the reader's fling when the user pins a finger on the overlay.
+     *
+     * The overlay consumes the touch, so without this the text would carry on gliding
+     * underneath a finger that plainly means "stop".
+     */
+    private fun stopReaderScrolling() {
+        try {
+            activity.documentViewManager.documentView.stopScrolling()
+        } catch (e: Exception) {
+            // The reader view may not be built yet; nothing to stop in that case.
+            Log.d(TAG, "Could not stop reader scrolling", e)
+        }
+    }
+
     /** Mirrors ViewModel state into the view and routes confirmed selections. */
     private fun startCollecting(finder: PassageFinderView) {
         stateJob?.cancel()
@@ -209,7 +224,10 @@ class PassageFinderLauncher(
             onVerseSelected = { viewModel.onVerseSelected(it) }
             onDrillDown = { viewModel.drillDown() }
             onDrillUp = { viewModel.drillUp() }
-            onUserInteracted = { viewModel.markInteracted() }
+            onUserInteracted = {
+                viewModel.markInteracted()
+                stopReaderScrolling()
+            }
         }
         // Append rather than insert at a fixed index — it is raised explicitly below, so
         // the insertion position doesn't matter and appending is robust as the layout
