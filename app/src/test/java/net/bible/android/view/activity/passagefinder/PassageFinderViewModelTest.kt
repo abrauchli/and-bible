@@ -228,12 +228,138 @@ class PassageFinderViewModelTest {
         viewModel.drillDown()                      // CHAPTER -> VERSE
         viewModel.onVerseSelected(5)
         testDispatcher.scheduler.advanceUntilIdle()
-        assertEquals("In the beginning", viewModel.previewVerseText.value)
+        assertEquals(PreviewVerseText.Ready("In the beginning"), viewModel.previewVerseText.value)
 
         viewModel.dismiss()
         viewModel.show(bookList())
 
-        assertEquals(null, viewModel.previewVerseText.value)
+        assertEquals(PreviewVerseText.None, viewModel.previewVerseText.value)
+    }
+
+    // ---- Pending preview state: dots instead of the previous verse's words ------------
+
+    @Test
+    fun `picking a new verse drops the loaded text for the pending state`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+        // Let the verse-text collector start before emitting into it; its flow has no
+        // replay, so a selection made while the collector is still queued on the test
+        // dispatcher is dropped and the assertions below would test nothing.
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()                      // BOOK -> CHAPTER
+        viewModel.drillDown()                      // CHAPTER -> VERSE
+        viewModel.onVerseSelected(5)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(PreviewVerseText.Ready("In the beginning"), viewModel.previewVerseText.value)
+
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("And God said")
+        viewModel.onVerseSelected(6)
+
+        // Scheduler deliberately NOT advanced: this is the window the bug lived in, where
+        // the reference line already said verse 6 while the bubble still showed verse 5's
+        // words — a wrong answer rather than a pending one.
+        assertEquals(PreviewVerseText.Loading, viewModel.previewVerseText.value)
+
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(PreviewVerseText.Ready("And God said"), viewModel.previewVerseText.value)
+    }
+
+    @Test
+    fun `drilling into VERSE level leaves the preview pending`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()                      // BOOK -> CHAPTER
+        viewModel.drillDown()                      // CHAPTER -> VERSE
+
+        assertEquals(
+            "drillDown requests verse text, so it must arm the pending state too",
+            PreviewVerseText.Loading,
+            viewModel.previewVerseText.value,
+        )
+    }
+
+    @Test
+    fun `onChapterSelected leaves the preview pending`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.onChapterSelected(3)
+
+        assertEquals(PreviewVerseText.Loading, viewModel.previewVerseText.value)
+    }
+
+    @Test
+    fun `a failed verse read ends in the no-text state`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any()))
+            .thenThrow(RuntimeException("module read failed"))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()
+        viewModel.drillDown()
+        viewModel.onVerseSelected(5)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // A read that throws must land in None, never stay pending: the placeholder would
+        // otherwise sit in the bubble forever waiting for text that is never coming.
+        assertEquals(PreviewVerseText.None, viewModel.previewVerseText.value)
+    }
+
+    @Test
+    fun `a blank verse read ends in the no-text state`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("   ")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()
+        viewModel.drillDown()
+        viewModel.onVerseSelected(5)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Blank is nothing to preview, not something still loading.
+        assertEquals(PreviewVerseText.None, viewModel.previewVerseText.value)
+    }
+
+    @Test
+    fun `drillUp out of VERSE level clears the preview to the no-text state`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()
+        viewModel.drillDown()
+        viewModel.onVerseSelected(5)
+        testDispatcher.scheduler.advanceUntilIdle()
+        assertEquals(PreviewVerseText.Ready("In the beginning"), viewModel.previewVerseText.value)
+
+        viewModel.drillUp()
+
+        // Retreating out of verse level is not a pending read — there is nothing to
+        // preview at chapter level, so the placeholder must not appear.
+        assertEquals(PreviewVerseText.None, viewModel.previewVerseText.value)
+    }
+
+    @Test
+    fun `dismiss keeps the loaded preview text so the bubble does not shrink mid-fade`() = runTest {
+        whenever(dataSource.getVerseText(any(), any(), any())).thenReturn("In the beginning")
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.show(bookList())
+        viewModel.drillDown()
+        viewModel.drillDown()
+        viewModel.onVerseSelected(5)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.dismiss()
+
+        // Deliberate: the bubble is still fading out when dismiss lands. Dropping its text
+        // here would make it visibly collapse to reference-only halfway through the fade.
+        // show() is what clears the preview, on the way back in.
+        assertEquals(PreviewVerseText.Ready("In the beginning"), viewModel.previewVerseText.value)
     }
 
     @Test

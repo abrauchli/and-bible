@@ -119,7 +119,7 @@ class PassageFinderView(context: Context) : View(context) {
     private var books: List<PassageFinderDataSource.BookInfo> = emptyList()
     private var chapterCounts: IntArray = IntArray(0)
     private var state = PassageFinderUiState()
-    private var verseText: String? = null
+    private var previewText: PreviewVerseText = PreviewVerseText.None
 
     /** True between the tap and the book list arriving; draws the skeleton. */
     private var loading = false
@@ -263,10 +263,10 @@ class PassageFinderView(context: Context) : View(context) {
     }
 
     /** Pushes a new ViewModel state and preview text into the view. */
-    fun render(newState: PassageFinderUiState, newVerseText: String?) {
+    fun render(newState: PassageFinderUiState, newPreviewText: PreviewVerseText) {
         val previous = state
         state = newState
-        verseText = newVerseText
+        previewText = newPreviewText
 
         chapterLane.itemCount = newState.chapterCount.coerceAtLeast(1)
         verseLane.itemCount = newState.verseCount.coerceAtLeast(1)
@@ -686,7 +686,12 @@ class PassageFinderView(context: Context) : View(context) {
         // The bubble sits a gap above the verse strip, plus its own bottom padding —
         // matching the Compose column's spacing plus the bubble's own bottom padding.
         val bottom = verseRect.top - metrics.stripSpacing * 2f
-        bubble.draw(canvas, reference, verseText, centreX(), bottom, maxWidth, alpha, bubbleRect)
+        // Resolved layout direction, read straight off the view — no allocation, and it
+        // is what decides which edge of the verse block the placeholder dots align to.
+        val isRtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        bubble.draw(
+            canvas, reference, previewText, centreX(), bottom, maxWidth, alpha, isRtl, bubbleRect,
+        )
     }
 
     private fun centreX(): Float = (contentLeft + contentRight) / 2f

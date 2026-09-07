@@ -178,6 +178,23 @@ class PassageFinderMetrics(private val displayMetrics: DisplayMetrics) {
     /** Verse text is clipped past this many lines, matching the Compose `maxLines`. */
     val bubbleMaxVerseLines = 5
 
+    /** Dots standing in for the verse text while its read is in flight. */
+    val bubbleLoadingDotCount = 3
+
+    val bubbleLoadingDotRadius = dp(2f)
+
+    /** Centre-to-centre spacing of the placeholder dots. */
+    val bubbleLoadingDotPitch = dp(8f)
+
+    /**
+     * Full width of the dot row (20dp across a 4dp-tall row).
+     *
+     * Derived rather than a literal because the dots are start-aligned with the verse text
+     * block, and mirrored to its end edge in right-to-left layouts; both need the footprint.
+     */
+    val bubbleLoadingDotsWidth =
+        bubbleLoadingDotPitch * (bubbleLoadingDotCount - 1) + bubbleLoadingDotRadius * 2f
+
     // ---- Skeleton ------------------------------------------------------------------
 
     /** Placeholder spine width used before the book list has loaded. */

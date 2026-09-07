@@ -39,6 +39,30 @@ import org.crosswire.jsword.versification.BibleBook
 /** The three navigation levels the user can drill through. */
 enum class NavigationLevel { BOOK, CHAPTER, VERSE }
 
+/**
+ * What the preview bubble currently knows about the selected verse's text.
+ *
+ * A single nullable String cannot say whether "no text" means nothing is being previewed
+ * or a read is still in flight, and only the latter may show a placeholder: the reference
+ * line updates synchronously as the user dials the verse strip, while the text is 150 ms
+ * of debounce plus a disk read behind it. Without the distinction the bubble either pairs
+ * the new reference with the previous verse's words, or shows a placeholder in states —
+ * a cold open, a retreat out of verse level — where nothing is coming at all.
+ *
+ * [None] and [Loading] are objects; [Ready] is the only allocating case and is built only
+ * on the debounced arrival path, a handful of times per scroll.
+ */
+sealed interface PreviewVerseText {
+    /** Nothing to preview: the widget just opened, or the user retreated out of verse level. */
+    data object None : PreviewVerseText
+
+    /** A verse is picked and its text is still being read; the bubble shows the placeholder. */
+    data object Loading : PreviewVerseText
+
+    /** The verse text is loaded and non-blank. */
+    data class Ready(val text: String) : PreviewVerseText
+}
+
 /** Represents the visible/hidden state and loaded data for the passage finder widget. */
 data class PassageFinderUiState(
     val visible: Boolean = false,
@@ -88,8 +112,8 @@ class PassageFinderViewModel(
     /** Emits the confirmed [Verse] when the user finalizes their selection. */
     val selectionConfirmed: SharedFlow<Verse> = _selectionConfirmed.asSharedFlow()
 
-    private val _previewVerseText = MutableStateFlow<String?>(null)
-    val previewVerseText: StateFlow<String?> = _previewVerseText.asStateFlow()
+    private val _previewVerseText = MutableStateFlow<PreviewVerseText>(PreviewVerseText.None)
+    val previewVerseText: StateFlow<PreviewVerseText> = _previewVerseText.asStateFlow()
 
     private val verseSelectionFlow = MutableSharedFlow<Triple<BibleBook, Int, Int>>(
         extraBufferCapacity = 1,
@@ -110,8 +134,30 @@ class PassageFinderViewModel(
                     null
                 }
             }
-            .onEach { text -> _previewVerseText.value = text }
+            .onEach { text ->
+                // Blank or null lands in None rather than staying pending. The catch above
+                // already degrades a failed read to null, so routing that here is what
+                // stops a failed read from leaving the placeholder up forever.
+                _previewVerseText.value =
+                    if (text.isNullOrBlank()) PreviewVerseText.None
+                    else PreviewVerseText.Ready(text)
+            }
             .launchIn(viewModelScope)
+    }
+
+    /**
+     * Requests the text of [book] [chapter]:[verse] and arms the preview placeholder.
+     *
+     * Every one of the caller sites updates `_uiState` immediately before calling this, so
+     * the bubble's reference line changes in the very next frame while the text is a
+     * debounce plus a disk read behind it. Arming [PreviewVerseText.Loading] in the same
+     * helper that requests the text is what keeps a call site from being able to ask for
+     * text without arming the placeholder — which is exactly how the bubble came to pair a
+     * new reference with the previous verse's words.
+     */
+    private fun requestVerseText(book: BibleBook, chapter: Int, verse: Int) {
+        _previewVerseText.value = PreviewVerseText.Loading
+        verseSelectionFlow.tryEmit(Triple(book, chapter, verse))
     }
 
     /**
@@ -122,7 +168,9 @@ class PassageFinderViewModel(
      * not been read from disk yet — [show] then fills in the real content.
      */
     fun showLoading() {
-        _previewVerseText.value = null
+        // Unrelated to PreviewVerseText.Loading: this is the widget's own skeleton while
+        // the book list is read, and nothing has been selected to preview yet.
+        _previewVerseText.value = PreviewVerseText.None
         _uiState.value = PassageFinderUiState(visible = true)
     }
 
@@ -152,7 +200,7 @@ class PassageFinderViewModel(
 
         // Drop any preview text from a previous session — the debounced verse-text
         // flow won't repopulate it until the user actually scrolls.
-        _previewVerseText.value = null
+        _previewVerseText.value = PreviewVerseText.None
 
         _uiState.value = PassageFinderUiState(
             visible = true,
@@ -282,7 +330,7 @@ class PassageFinderViewModel(
                         selectedVerse = initialVerse,
                         verseCount = verseCount,
                     )
-                    verseSelectionFlow.tryEmit(Triple(book.book, 1, initialVerse))
+                    requestVerseText(book.book, 1, initialVerse)
                 } else {
                     val verseCount = dataSource.getVerseCount(book.book, initialChapter)
                     _uiState.value = state.copy(
@@ -302,7 +350,7 @@ class PassageFinderViewModel(
                     selectedVerse = initialVerse,
                     verseCount = verseCount,
                 )
-                verseSelectionFlow.tryEmit(Triple(book.book, state.selectedChapter, initialVerse))
+                requestVerseText(book.book, state.selectedChapter, initialVerse)
             }
             NavigationLevel.VERSE -> { /* Already at deepest level */ }
         }
@@ -327,7 +375,9 @@ class PassageFinderViewModel(
                     currentLevel = targetLevel,
                     selectedVerse = 1,
                 )
-                _previewVerseText.value = null
+                // Nothing is being previewed at chapter level, so this is None rather than
+                // a pending read — no placeholder may appear on the way back out.
+                _previewVerseText.value = PreviewVerseText.None
                 true
             }
             NavigationLevel.CHAPTER -> {
@@ -356,7 +406,7 @@ class PassageFinderViewModel(
                 NavigationLevel.CHAPTER else state.currentLevel,
             showPreview = true,
         )
-        verseSelectionFlow.tryEmit(Triple(book.book, chapter, 1))
+        requestVerseText(book.book, chapter, 1)
     }
 
     /** Update the selected verse and trigger async verse text loading. */
@@ -367,7 +417,7 @@ class PassageFinderViewModel(
             showPreview = true,
         )
         val book = state.books.getOrNull(state.selectedBookIndex)?.book ?: return
-        verseSelectionFlow.tryEmit(Triple(book, state.selectedChapter, verse))
+        requestVerseText(book, state.selectedChapter, verse)
     }
 
     companion object {
