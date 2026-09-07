@@ -173,14 +173,17 @@ class PassageFinderViewModel(
     /**
      * Re-centres the widget on wherever the reader has scrolled to.
      *
-     * Called as the Bible view reports its scroll position, so an overlay opened while
-     * the text is still gliding follows along instead of showing a stale reference.
-     * Stops for good once the user touches a strip — from then on their selection is the
-     * one that matters, and tracking would fight the finger.
+     * Called as the Bible view reports its scroll position, so the widget always shows
+     * the passage actually on screen behind it — whether it was opened mid-fling or the
+     * user scrolled the text through the overlay afterwards.
+     *
+     * There is no need to stop following once the user has picked something by hand.
+     * The two can only disagree while the text is moving, and putting a finger on the
+     * widget halts the reader, so a hand-made selection is never overwritten.
      */
     fun followCurrentVerse() {
         val state = _uiState.value
-        if (!state.visible || state.hasInteracted || state.books.isEmpty()) return
+        if (!state.visible || state.books.isEmpty()) return
         val current = dataSource.getCurrentVerse()
         val bookIndex = state.books.indexOfFirst { it.book == current.book }
         if (bookIndex < 0) return
@@ -202,18 +205,6 @@ class PassageFinderViewModel(
             chapterCount = chapterCount,
             verseCount = verseCount,
         )
-    }
-
-    /**
-     * Records that the user has taken over, freezing [followCurrentVerse].
-     *
-     * Fired on touch-down rather than when a scroll settles, so a strip grabbed while the
-     * text behind is still flinging is never yanked out from under the finger.
-     */
-    fun markInteracted() {
-        val state = _uiState.value
-        if (state.hasInteracted) return
-        _uiState.value = state.copy(hasInteracted = true)
     }
 
     /** Hide the widget. */

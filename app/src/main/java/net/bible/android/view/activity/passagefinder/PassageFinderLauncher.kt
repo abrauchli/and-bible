@@ -176,7 +176,10 @@ class PassageFinderLauncher(
      * has touched a strip.
      */
     fun onCurrentVerseChanged() {
-        if (isVisible) viewModel.followCurrentVerse()
+        val finder = view ?: return
+        // Skip only while a finger is on the widget itself, so an update arriving
+        // mid-drag cannot pull a strip out from under it.
+        if (finder.isShowing && !finder.isBeingTouched) viewModel.followCurrentVerse()
     }
 
     /**
@@ -261,10 +264,7 @@ class PassageFinderLauncher(
             onVerseSelected = { viewModel.onVerseSelected(it) }
             onDrillDown = { viewModel.drillDown() }
             onDrillUp = { viewModel.drillUp() }
-            onUserInteracted = {
-                viewModel.markInteracted()
-                stopReaderScrolling()
-            }
+            onWidgetTouched = { stopReaderScrolling() }
             onReaderTouch = { event -> forwardTouchToReader(event) }
         }
         // Append rather than insert at a fixed index — it is raised explicitly below, so

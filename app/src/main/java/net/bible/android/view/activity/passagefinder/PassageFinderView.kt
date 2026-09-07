@@ -109,11 +109,10 @@ class PassageFinderView(context: Context) : View(context) {
     /**
      * Invoked the moment the user puts a finger on the widget itself.
      *
-     * Signals that the user has taken over: the widget stops following the reader, and
-     * the reader stops gliding underneath. Fired for any touch, not only one landing on
-     * a strip — pinning a finger anywhere is the universal gesture for "stop".
+     * Only fired for touches the widget keeps — a strip or the bubble. Anything landing
+     * clear of those is forwarded to the reader instead, which stops its own fling.
      */
-    var onUserInteracted: (() -> Unit)? = null
+    var onWidgetTouched: (() -> Unit)? = null
 
     // ---- State mirrored from the ViewModel -----------------------------------------
 
@@ -191,6 +190,15 @@ class PassageFinderView(context: Context) : View(context) {
 
     /** True while the current gesture is being handed to the reader behind the overlay. */
     private var readerGesture = false
+
+    /**
+     * True between touch-down and lift on a gesture the widget is handling itself.
+     *
+     * Reader tracking is suspended while this holds, so an update arriving mid-drag
+     * cannot pull a strip out from under the finger.
+     */
+    var isBeingTouched = false
+        private set
 
     /** null until the gesture commits to an axis; then true for vertical. */
     private var lockedVertical: Boolean? = null
@@ -643,6 +651,7 @@ class PassageFinderView(context: Context) : View(context) {
                 // way a finger put down there stops the glide and scrolls the text in one
                 // motion, instead of the overlay swallowing it.
                 readerGesture = activeScroller == null && !onBubble && onReaderTouch != null
+                isBeingTouched = !readerGesture
                 if (readerGesture) {
                     // The real press is what halts the fling — the same thing that
                     // happens whenever a finger lands on a scrolling page.
@@ -650,9 +659,8 @@ class PassageFinderView(context: Context) : View(context) {
                 } else {
                     // Grabbing a moving strip stops it, as with any scrollable.
                     activeScroller?.stop()
-                    // A finger on the widget itself hands control over: it stops
-                    // following the reader, and the reader stops gliding beneath it.
-                    onUserInteracted?.invoke()
+                    // A finger on the widget halts the reader gliding beneath it.
+                    onWidgetTouched?.invoke()
                 }
                 return true
             }
@@ -732,6 +740,7 @@ class PassageFinderView(context: Context) : View(context) {
         velocityTracker = null
         activeScroller = null
         readerGesture = false
+        isBeingTouched = false
         lockedVertical = null
         invalidate()
     }
