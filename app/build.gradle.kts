@@ -278,8 +278,11 @@ android {
 
         create("github") {
             dimension = dimDistributionChannelName
-            // Compose 1.10+ (foundation-layout, ui-tooling) requires minSdk 23.
-            // The other flavors already default to 23; this brings github in line.
+            // Brought in line with every other flavor, which already default to 23.
+            // At 21 this flavor was only nominally supported: the app calls API 23 APIs
+            // unguarded in several places that predate this branch (Context#getColor in
+            // the AI log adapter and settings screens among them), so lint fails and
+            // those screens would throw on Android 5.x.
             minSdk = 23
         }
 
