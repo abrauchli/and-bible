@@ -250,21 +250,29 @@ class PassageFinderView(context: Context) : View(context) {
         chapterLane.itemCount = newState.chapterCount.coerceAtLeast(1)
         verseLane.itemCount = newState.verseCount.coerceAtLeast(1)
 
+        // Animate a re-centre only when the strips were already showing real content.
+        // On a cold open the widget first renders a loading placeholder, which is visible
+        // but bookless and parked at book 0 / chapter 1 / verse 1; treating that as a
+        // starting position would send the strips spinning all the way to the current
+        // verse at the very moment the books appear. Snap instead — that placeholder was
+        // never a position the user chose.
+        val animate = previous.visible && previous.books.isNotEmpty()
+
         // Re-center any strip whose selection moved for a reason other than its own
         // settle — a tap, a drill, or a book change resetting chapter and verse to 1.
         if (newState.selectedBookIndex != previous.selectedBookIndex) {
-            recenter(bookScroll, newState.selectedBookIndex, animate = previous.visible)
+            recenter(bookScroll, newState.selectedBookIndex, animate = animate)
         }
         if (newState.selectedChapter != previous.selectedChapter ||
             newState.selectedBookIndex != previous.selectedBookIndex
         ) {
-            recenter(chapterScroll, newState.selectedChapter - 1, animate = previous.visible)
+            recenter(chapterScroll, newState.selectedChapter - 1, animate = animate)
         }
         if (newState.selectedVerse != previous.selectedVerse ||
             newState.selectedChapter != previous.selectedChapter ||
             newState.selectedBookIndex != previous.selectedBookIndex
         ) {
-            recenter(verseScroll, newState.selectedVerse - 1, animate = previous.visible)
+            recenter(verseScroll, newState.selectedVerse - 1, animate = animate)
         }
 
         bubbleAlpha.durationMs = if (newState.showPreview) BUBBLE_FADE_IN_MS else BUBBLE_FADE_OUT_MS

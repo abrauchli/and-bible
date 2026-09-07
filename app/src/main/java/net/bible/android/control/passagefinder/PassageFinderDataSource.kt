@@ -86,9 +86,16 @@ class PassageFinderDataSource(
      * "does this module contain this book?" by reading the module's index off disk, once
      * per book. On a cold module that is well over a hundred file reads, which is why
      * this must never sit between the user's tap and the first frame.
+     *
+     * That same slowness is why the cache key is captured up front and re-checked at the
+     * end: the user can switch translation while those file reads are still going, and
+     * keying the result on whatever document happens to be open when the load lands would
+     * file one module's books under another module's name — a wrong answer that then
+     * sticks, because nothing else ever invalidates the entry.
      */
     suspend fun loadBooks(): BookList = withContext(Dispatchers.IO) {
         cachedBooks()?.let { return@withContext it }
+        val loadKey = currentDocumentKey()
         val versification = navigationControl.versification
         val books = navigationControl.getAllDocumentBooksExcludingIntros()
         val infos = books.map { book ->
@@ -101,7 +108,15 @@ class PassageFinderDataSource(
         }
         val counts = IntArray(infos.size) { getChapterCount(infos[it].book) }
         val loaded = BookList(infos, counts)
-        currentDocumentKey()?.let { cache = it to loaded }
+        val settledKey = currentDocumentKey()
+        if (loadKey != null && loadKey == settledKey) {
+            cache = loadKey to loaded
+        } else {
+            // The document moved under us. Hand the result to this caller — it asked for
+            // the list that was current when it called — but don't cache it, since we can
+            // no longer say which module it describes.
+            Log.d(TAG, "Document changed during load ($loadKey -> $settledKey); not caching")
+        }
         loaded
     }
 
