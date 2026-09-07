@@ -125,7 +125,8 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
     /**
      * Draws one book spine.
      *
-     * @param proximity lens proximity, 0 at the edge of the lens and 1 at its centre.
+     * @param proximity linear lens proximity, driving fade, relief and text weight.
+     * @param sizeFactor bell-shaped magnification, driving width and height.
      * @param isGroupStart whether a divider marks the start of a new biblical category.
      * @param isOpenBook whether this is the book currently open in the reader.
      */
@@ -136,13 +137,11 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         width: Float,
         bottom: Float,
         proximity: Float,
+        sizeFactor: Float,
         isGroupStart: Boolean,
         isOpenBook: Boolean,
     ) {
-        // Quadratic on size so the centre spine dominates; linear on alpha so approaching
-        // spines stay legible further out. Both match the Compose curves.
-        val sizeProximity = proximity * proximity
-        val height = lerp(metrics.spineMinHeight, metrics.spineMaxHeight, sizeProximity)
+        val height = lerp(metrics.spineMinHeight, metrics.spineMaxHeight, sizeFactor)
         val top = bottom - height
 
         // The Compose spine sat in a graphicsLayer with this alpha. Folding it into each
@@ -298,6 +297,12 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
      * drives both the box and the glyph size — matching the Compose `graphicsLayer`
      * scale, which likewise magnified the rasterised text along with the box.
      *
+     * The box is square for one and two digits but widens to fit whatever the digits
+     * actually measure, so a three-digit chapter like Psalm 150 gets a wider plate rather
+     * than smaller numerals. Sizing from the measurement rather than from the digit count
+     * matters because the box is in dp while the text is in sp: at a large system font
+     * scale even two digits outgrow the square, and the same rule catches that.
+     *
      * @param borderAlpha 0 hides the selection border entirely.
      */
     fun drawNumberCell(
@@ -313,8 +318,32 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         emphasised: Boolean,
         borderAlpha: Float,
     ) {
-        val half = cellSize * scale / 2f
-        scratchRect.set(centreX - half, centreY - half, centreX + half, centreY + half)
+        val height = cellSize * scale
+        val halfHeight = height / 2f
+        var textSize = quantiseTextSize(baseTextSize * scale)
+        val padding = metrics.cellTextPaddingRatio * height
+        val maxWidth = metrics.cellMaxAspect * height
+
+        // Width from the digit advance rather than measureText, so every number with the
+        // same digit count gets the same plate even on OEM fonts with proportional
+        // figures — otherwise "111" and "888" would sit in visibly different boxes as
+        // they scrolled past. Measured bold, the widest the cell ever draws, so the plate
+        // does not twitch when a cell goes bold on reaching the centre.
+        val textWidth = text.length * digitAdvanceRatio * textSize
+        val width = if (textWidth + padding * 2f > maxWidth) {
+            // Only reachable at extreme font scales; shrink the text to fit the cap.
+            textSize = quantiseTextSize(textSize * (maxWidth - padding * 2f) / textWidth)
+            maxWidth
+        } else {
+            maxOf(height, textWidth + padding * 2f)
+        }
+
+        val halfWidth = width / 2f
+        scratchRect.set(
+            centreX - halfWidth, centreY - halfHeight, centreX + halfWidth, centreY + halfHeight,
+        )
+        // Corner radius stays proportional to the cell rather than becoming a stadium —
+        // a fully rounded pill would read as a different component from its neighbours.
         val radius = metrics.cellCornerRadius * scale
 
         fillPaint.shader = null
@@ -336,13 +365,32 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         }
 
         textPaint.shader = null
-        textPaint.textSize = quantiseTextSize(baseTextSize * scale)
+        textPaint.textSize = textSize
         textPaint.typeface = if (emphasised) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         textPaint.color = Color.BLACK
         textPaint.alpha = (alpha * 255).roundToInt().coerceIn(0, 255)
         textPaint.getFontMetrics(fontMetrics)
         val baseline = centreY - (fontMetrics.ascent + fontMetrics.descent) / 2f
         canvas.drawText(text, centreX, baseline, textPaint)
+    }
+
+    /**
+     * Widest digit advance for the bold face, per pixel of text size.
+     *
+     * Measured once at a large size and normalised, since advance scales linearly. Bold
+     * is the widest the cell ever renders, so sizing from it means a cell keeps the same
+     * plate whether or not it is currently the centred, emphasised one.
+     */
+    private val digitAdvanceRatio: Float by lazy {
+        val probe = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            typeface = Typeface.DEFAULT_BOLD
+            textSize = DIGIT_PROBE_SIZE
+        }
+        var widest = 0f
+        for (digit in '0'..'9') {
+            widest = maxOf(widest, probe.measureText(digit.toString()))
+        }
+        widest / DIGIT_PROBE_SIZE
     }
 
     // ---- Skeleton ------------------------------------------------------------------
@@ -362,8 +410,12 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         var x = centre - ((centre - left) / pitch).toInt() * pitch
         while (x < right) {
             // Fade the placeholders out towards the edges, echoing the lens falloff.
-            val proximity = (1f - abs(x - centre) / metrics.bookLensRadius).coerceIn(0f, 1f)
-            val height = lerp(metrics.spineMinHeight, metrics.spineMaxHeight, proximity * proximity)
+            val distance = abs(x - centre) / metrics.bookLensRadius
+            val proximity = (1f - distance).coerceIn(0f, 1f)
+            val height = lerp(
+                metrics.spineMinHeight, metrics.spineMaxHeight,
+                bellFalloff(distance, metrics.bookLensFalloff),
+            )
             fillPaint.alpha = ((0.06f + 0.10f * proximity) * 255).roundToInt()
             scratchRect.set(x, bottom - height, x + metrics.skeletonSpineWidth, bottom)
             canvas.drawRoundRect(
@@ -437,5 +489,8 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
          * keeps hitting during a scroll.
          */
         const val TEXT_SIZE_QUANTUM = 0.25f
+
+        /** Large enough that the measured digit advance is precise once normalised. */
+        const val DIGIT_PROBE_SIZE = 100f
     }
 }

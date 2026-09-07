@@ -215,6 +215,46 @@ class StripAnimationsTest {
     }
 
     @Test
+    fun `bellFalloff peaks at the centre and vanishes at the lens edge`() {
+        assertEquals(1f, bellFalloff(0f, 10f))
+        assertEquals("nothing may stick out past the lens", 0f, bellFalloff(1f, 10f))
+        assertEquals(0f, bellFalloff(1.5f, 10f))
+        // Symmetric, so a spine to the left of centre matches its mirror to the right.
+        assertEquals(bellFalloff(0.3f, 10f), bellFalloff(-0.3f, 10f))
+    }
+
+    @Test
+    fun `bellFalloff is flat on top and steep on the flanks`() {
+        // This is what distinguishes a bell from the squared linear ramp it replaced: the
+        // ramp sheds width immediately and evenly, so the strip read as a triangle.
+        val nearCentre = bellFalloff(0f, 10f) - bellFalloff(0.1f, 10f)
+        val midFlank = bellFalloff(0.3f, 10f) - bellFalloff(0.4f, 10f)
+        assertTrue(
+            "the bell should lose far less over its first tenth than across its flank",
+            nearCentre < midFlank,
+        )
+    }
+
+    @Test
+    fun `a tighter falloff concentrates magnification near the centre`() {
+        // Raising the falloff is the knob for fitting more books on the strip.
+        assertTrue(bellFalloff(0.4f, 16f) < bellFalloff(0.4f, 10f))
+        assertTrue(bellFalloff(0.4f, 10f) < bellFalloff(0.4f, 4f))
+        // The peak itself is unaffected, so the centred spine keeps its full size.
+        assertEquals(1f, bellFalloff(0f, 16f))
+    }
+
+    @Test
+    fun `bellFalloff decreases monotonically`() {
+        var previous = Float.MAX_VALUE
+        for (step in 0..100) {
+            val value = bellFalloff(step / 100f, 10f)
+            assertTrue("bell rose again at $step", value <= previous + 1e-6f)
+            previous = value
+        }
+    }
+
+    @Test
     fun `lerp interpolates and extrapolates linearly`() {
         assertEquals(0f, lerp(0f, 10f, 0f))
         assertEquals(10f, lerp(0f, 10f, 1f))

@@ -210,3 +210,24 @@ private const val BISECTION_STEPS = 8
 
 /** Linear interpolation from [a] to [b]. */
 fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * t
+
+/**
+ * Gaussian bell falloff, 1 at the centre and tapering to nothing at the lens edge.
+ *
+ * [normalisedDistance] is distance from the lens centre as a fraction of the lens radius.
+ * [falloff] controls how tightly the bell is drawn in: larger values concentrate the
+ * magnification into fewer items either side of the centre, which leaves more items at
+ * their base size and so fits more of them on screen.
+ *
+ * This replaced a plain squared linear ramp on the book strip. The ramp reached its peak
+ * with a corner and shed width steadily across the whole lens, which read as a triangle
+ * rather than a bell; a Gaussian is flat at the top and steep on the flanks, so the
+ * centre few spines look deliberately picked out and the rest stay compact.
+ */
+fun bellFalloff(normalisedDistance: Float, falloff: Float): Float {
+    val d = abs(normalisedDistance)
+    // Beyond the lens the value is already vanishingly small; clamping keeps distant
+    // items exactly at their base size instead of a hair above it.
+    if (d >= 1f) return 0f
+    return exp(-falloff * d * d)
+}

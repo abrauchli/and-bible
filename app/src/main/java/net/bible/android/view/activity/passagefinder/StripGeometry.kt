@@ -159,6 +159,9 @@ class LensLane : StripLane {
     /** Width of a spine at the exact centre of the lens. */
     var lensWidthPx: Float = 0f
 
+    /** Tightness of the magnification bell; see [bellFalloff]. */
+    var lensFalloff: Float = 10f
+
     override var scroll: Float = 0f
 
     /** Magnified width of each item. Valid after [layout]. */
@@ -169,8 +172,20 @@ class LensLane : StripLane {
     var lefts: FloatArray = FloatArray(0)
         private set
 
-    /** Lens proximity (0..1) of each item. Valid after [layout]. */
+    /**
+     * Linear lens proximity (0..1) of each item, for fading and text weight. Kept linear
+     * so spines approaching the lens stay legible well before they start to grow.
+     * Valid after [layout].
+     */
     var proximities: FloatArray = FloatArray(0)
+        private set
+
+    /**
+     * Bell-shaped magnification factor (0..1) of each item, for width and height.
+     * Separate from [proximities] so size can be concentrated at the centre while
+     * legibility fades out gradually. Valid after [layout].
+     */
+    var sizeFactors: FloatArray = FloatArray(0)
         private set
 
     override var localScale: Float = 1f
@@ -190,6 +205,7 @@ class LensLane : StripLane {
         widths = FloatArray(n)
         lefts = FloatArray(n)
         proximities = FloatArray(n)
+        sizeFactors = FloatArray(n)
         var acc = 0f
         for (i in 0 until n) {
             baseSpans[i] = widthsPx[i] + gapPx
@@ -228,13 +244,16 @@ class LensLane : StripLane {
         val n = itemCount
         if (n == 0) return
 
-        // 1 + 2: proximity and magnified width. Quadratic falloff on size so the centre
-        // spine reads as clearly larger than its neighbours rather than blending in.
+        // 1 + 2: proximity and magnified width. Size follows a bell so the few spines at
+        // the centre are picked out sharply and everything else stays near base width —
+        // which is what lets more books fit on screen. Fading stays on the linear ramp.
         for (i in 0 until n) {
             val centre = baseLefts[i] + baseWidths[i] / 2f
-            val p = (1f - abs(centre - scroll) / lensRadiusPx).coerceIn(0f, 1f)
-            proximities[i] = p
-            widths[i] = lerp(baseWidths[i], lensWidthPx, p * p)
+            val distance = abs(centre - scroll) / lensRadiusPx
+            proximities[i] = (1f - distance).coerceIn(0f, 1f)
+            val bell = bellFalloff(distance, lensFalloff)
+            sizeFactors[i] = bell
+            widths[i] = lerp(baseWidths[i], lensWidthPx, bell)
         }
 
         // 3: cumulative screen sweep, relative to an arbitrary origin.

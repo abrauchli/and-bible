@@ -165,6 +165,49 @@ class StripGeometryTest {
     }
 
     @Test
+    fun `a tighter lens falloff fits more books on screen`() {
+        // The user's complaint was that the strip looked linear and showed too few books.
+        // Tightening the bell must leave more of them at base width, which is what buys
+        // the extra spines — while the centred spine keeps its full size.
+        val viewport = 1080f
+        fun visibleCount(falloff: Float): Int {
+            val lane = lensLane().apply { lensFalloff = falloff }
+            lane.scroll = lane.snapPointFor(33)
+            lane.layout(centre)
+            return lane.visibleRange(viewport).count()
+        }
+        assertTrue(
+            "a tighter bell should fit at least as many books",
+            visibleCount(16f) >= visibleCount(4f),
+        )
+
+        val tight = lensLane().apply { lensFalloff = 16f }
+        tight.scroll = tight.snapPointFor(33)
+        tight.layout(centre)
+        assertEquals(
+            "the centred spine must still reach full lens width",
+            108.0, tight.widths[33].toDouble(), 0.01,
+        )
+    }
+
+    @Test
+    fun `size follows the bell while fading stays linear`() {
+        // Legibility and size are deliberately decoupled: a spine well out along the lens
+        // should still be readable (non-zero proximity) while already back at base width.
+        val lane = lensLane()
+        lane.scroll = lane.snapPointFor(33)
+        lane.layout(centre)
+        val far = 33 - 6
+        assertTrue("a distant spine should still fade in", lane.proximities[far] > 0f)
+        assertTrue(
+            "but should have given up nearly all its magnification",
+            lane.sizeFactors[far] < lane.proximities[far],
+        )
+        assertEquals(1f, lane.sizeFactors[33])
+        assertEquals(1f, lane.proximities[33])
+    }
+
+    @Test
     fun `local scale reflects magnification so drags track the finger`() {
         val lane = lensLane()
         lane.scroll = lane.snapPointFor(33)

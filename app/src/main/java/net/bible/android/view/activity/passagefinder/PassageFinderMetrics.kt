@@ -18,6 +18,7 @@
 package net.bible.android.view.activity.passagefinder
 
 import android.util.DisplayMetrics
+import android.util.TypedValue
 
 /**
  * Every dimension of the passage finder, resolved to pixels once per density change.
@@ -28,16 +29,21 @@ import android.util.DisplayMetrics
  * layout offsets, which are pixels), and are kept in raw pixels here for the same reason —
  * converting them to dp would widen the lens on high-density screens and change the look.
  */
-class PassageFinderMetrics(displayMetrics: DisplayMetrics) {
-
-    private val density = displayMetrics.density
-    private val scaledDensity = displayMetrics.scaledDensity
+class PassageFinderMetrics(private val displayMetrics: DisplayMetrics) {
 
     /** Converts [value] density-independent pixels to pixels. */
-    fun dp(value: Float): Float = value * density
+    fun dp(value: Float): Float =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, displayMetrics)
 
-    /** Converts [value] scale-independent pixels to pixels, honouring the font scale. */
-    fun sp(value: Float): Float = value * scaledDensity
+    /**
+     * Converts [value] scale-independent pixels to pixels, honouring the font scale.
+     *
+     * Uses [TypedValue.applyDimension] rather than multiplying by `scaledDensity`, which
+     * is deprecated and, from API 34, wrong: font scaling above 130% is non-linear there,
+     * so a single density factor over-scales large text.
+     */
+    fun sp(value: Float): Float =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value, displayMetrics)
 
     // ---- Book strip ----------------------------------------------------------------
 
@@ -70,6 +76,15 @@ class PassageFinderMetrics(displayMetrics: DisplayMetrics) {
     /** Lens reach for the book strip. Raw pixels — see the class note. */
     val bookLensRadius = 320f
 
+    /**
+     * Tightness of the book strip's magnification bell; see [bellFalloff].
+     *
+     * Raising this narrows the group of enlarged spines and so fits more books on screen;
+     * lowering it spreads the magnification across the whole lens, which flattens the
+     * curve towards a straight ramp.
+     */
+    val bookLensFalloff = 10f
+
     // ---- Chapter strip -------------------------------------------------------------
 
     /** Layout pitch of a chapter cell. Cells scale about their centre, so this is constant. */
@@ -87,7 +102,15 @@ class PassageFinderMetrics(displayMetrics: DisplayMetrics) {
     val verseCellSize = dp(20f)
     val verseMinScale = 18f / 20f
     val verseMaxScale = 56f / 20f
-    val verseTextSize = sp(16f)
+
+    /**
+     * 15sp rather than 16: the verse strip magnifies more than the chapter strip
+     * (2.8x against 2.33x), so equal source sizes rendered unequally — 45sp against 42sp
+     * in identically sized boxes. Scaling from 15sp puts both centred cells at 42sp, so
+     * the two strips finally read as one control, and gives two-digit verses the same
+     * breathing room chapters already had.
+     */
+    val verseTextSize = sp(15f)
 
     /** Lens reach for the verse strip. Raw pixels — see the class note. */
     val verseLensRadius = 260f
@@ -97,6 +120,19 @@ class PassageFinderMetrics(displayMetrics: DisplayMetrics) {
     val cellCornerRadius = dp(6f)
     val cellBorderHaloWidth = dp(4f)
     val cellBorderCoreWidth = dp(1.5f)
+
+    /** Horizontal breathing room each side of a cell's digits, as a fraction of its height. */
+    val cellTextPaddingRatio = 0.06f
+
+    /**
+     * Widest a cell may grow, as a multiple of its height, before its text shrinks instead.
+     *
+     * Cells widen to fit their digits rather than squeezing the glyphs, since shrinking
+     * text is the worst thing to do to the number the eye is actually fixated on. The cap
+     * exists only so an extreme system font scale cannot produce a cell wide enough to
+     * swallow its neighbours; past it, text scaling takes over.
+     */
+    val cellMaxAspect = 1.5f
 
     // ---- Strip stack ---------------------------------------------------------------
 

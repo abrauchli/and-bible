@@ -65,9 +65,15 @@ class PassageFinderView(context: Context) : View(context) {
     private val chapterLane = UniformLane()
     private val verseLane = UniformLane()
 
+    // The numeric strips damp their flings by their own peak magnification. Their cells
+    // keep a small constant pitch but are drawn up to 2.8x that at the centre, so the
+    // numbers stream past far faster than the strip looks like it is moving and an
+    // ordinary fling overshoots to the end of a long chapter. Dragging needs no such
+    // correction — the finger stays on the content — and the book strip already divides
+    // by its live magnification while scrolling.
     private val bookScroll = LaneScroller(bookLane)
-    private val chapterScroll = LaneScroller(chapterLane)
-    private val verseScroll = LaneScroller(verseLane)
+    private val chapterScroll = LaneScroller(chapterLane, 1f / metrics.chapterMaxScale)
+    private val verseScroll = LaneScroller(verseLane, 1f / metrics.verseMaxScale)
 
     private val a11y = PassageFinderA11yHelper(this)
 
@@ -316,6 +322,7 @@ class PassageFinderView(context: Context) : View(context) {
         bookLane.gapPx = metrics.spineGap
         bookLane.lensRadiusPx = metrics.bookLensRadius
         bookLane.lensWidthPx = metrics.spineLensWidth
+        bookLane.lensFalloff = metrics.bookLensFalloff
         bookLane.setBaseWidths(widths)
         bookLane.scroll = bookLane.snapPointFor(state.selectedBookIndex)
         chapterLane.scroll = chapterLane.snapPointFor(state.selectedChapter - 1)
@@ -470,6 +477,7 @@ class PassageFinderView(context: Context) : View(context) {
             width = bookLane.widths[index],
             bottom = bookRect.bottom,
             proximity = bookLane.proximities[index],
+            sizeFactor = bookLane.sizeFactors[index],
             isGroupStart = isGroupStart,
             isOpenBook = index == state.openBookIndex,
         )
@@ -502,36 +510,48 @@ class PassageFinderView(context: Context) : View(context) {
         canvas.clipRect(rect)
         // Cells overflow their pitch when magnified, so extend the range by the widest
         // possible cell to avoid popping at the edges.
-        val range = lane.visibleRange(width.toFloat(), cellSize * maxScale)
-        for (pass in 0..1) {
-            for (i in range) {
-                val isCentred = i == centred
-                val isSelected = i + 1 == selected
-                // Second pass draws the centred and selected cells on top.
-                if ((isCentred || isSelected) != (pass == 1)) continue
-                val proximity = lane.proximity(i, radius)
-                // Quartic falloff steepens the bell curve so the centre cell dominates
-                // its immediate neighbours instead of blending into them.
-                val sizeProximity = proximity * proximity * proximity * proximity
-                painter.drawNumberCell(
-                    canvas = canvas,
-                    text = (i + 1).toString(),
-                    centreX = centreX + lane.offsetFromCentre(i),
-                    centreY = centreY,
-                    cellSize = cellSize,
-                    baseTextSize = textSize,
-                    scale = lerp(minScale, maxScale, sizeProximity),
-                    alpha = (0.3f + 0.7f * proximity) * stripAlpha,
-                    isSelected = isSelected,
-                    emphasised = isSelected || isCentred,
-                    borderAlpha = when {
-                        isSelected -> 1f
-                        isCentred -> borderAlpha
-                        else -> 0f
-                    },
-                )
+        val range = lane.visibleRange(width.toFloat(), cellSize * maxScale * metrics.cellMaxAspect)
+
+        fun drawCell(i: Int) {
+            if (i !in range) return
+            val isCentred = i == centred
+            val isSelected = i + 1 == selected
+            val proximity = lane.proximity(i, radius)
+            // Quartic falloff steepens the bell curve so the centre cell dominates
+            // its immediate neighbours instead of blending into them.
+            val sizeProximity = proximity * proximity * proximity * proximity
+            painter.drawNumberCell(
+                canvas = canvas,
+                text = (i + 1).toString(),
+                centreX = centreX + lane.offsetFromCentre(i),
+                centreY = centreY,
+                cellSize = cellSize,
+                baseTextSize = textSize,
+                scale = lerp(minScale, maxScale, sizeProximity),
+                alpha = (0.3f + 0.7f * proximity) * stripAlpha,
+                isSelected = isSelected,
+                emphasised = isSelected || isCentred,
+                borderAlpha = when {
+                    isSelected -> 1f
+                    isCentred -> borderAlpha
+                    else -> 0f
+                },
+            )
+        }
+
+        // Draw outside-in from both sides, so every cell overlaps the one further from
+        // the centre and the stack converges on the focused cell. Drawing in plain index
+        // order would be right only to the left of centre; to the right each cell would
+        // cover its inner neighbour, and the wider three-digit plates make that obvious.
+        val selectedIndex = selected - 1
+        for (distance in maxOf(centred - range.first, range.last - centred) downTo 1) {
+            for (i in intArrayOf(centred - distance, centred + distance)) {
+                if (i != selectedIndex) drawCell(i)
             }
         }
+        // Committed selection, then the visual centre on top of everything.
+        if (selectedIndex != centred) drawCell(selectedIndex)
+        drawCell(centred)
         canvas.restore()
     }
 
@@ -811,7 +831,7 @@ class PassageFinderView(context: Context) : View(context) {
         val offset = x - centreX()
         val index = lane.nearestIndex(lane.scroll + offset)
         val distance = abs(lane.offsetFromCentre(index) - offset)
-        return if (distance <= cellSize * maxScale / 2f) index else -1
+        return if (distance <= cellSize * maxScale * metrics.cellMaxAspect / 2f) index else -1
     }
 
     // ---- Accessibility -------------------------------------------------------------
@@ -892,7 +912,9 @@ class PassageFinderView(context: Context) : View(context) {
         label: (Int) -> String,
     ) {
         if (rect.height() <= 0.5f || lane.itemCount <= 0) return
-        val half = cellSize * maxScale / 2f
+        // Half the widest a cell can be drawn, so a three-digit plate's node still covers
+        // the whole plate rather than just its square core.
+        val half = cellSize * maxScale * metrics.cellMaxAspect / 2f
         val centre = centreX()
         for (i in lane.visibleRange(width.toFloat(), half)) {
             val x = centre + lane.offsetFromCentre(i)
@@ -957,7 +979,11 @@ class PassageFinderView(context: Context) : View(context) {
      * the conversion frame by frame is what keeps a fling over thick and thin books
      * tracking the finger's initial throw.
      */
-    private inner class LaneScroller(val lane: StripLane) {
+    private inner class LaneScroller(
+        val lane: StripLane,
+        /** Fling velocities are multiplied by this before being handed to the scroller. */
+        private val flingVelocityScale: Float = 1f,
+    ) {
         val coordinator = ScrollCoordinator()
         private val scroller = OverScroller(context)
         private var lastScrollerX = 0
@@ -981,7 +1007,7 @@ class PassageFinderView(context: Context) : View(context) {
             lastHapticIndex = lane.nearestIndex()
             lastScrollerX = 0
             scroller.fling(
-                0, 0, velocityScreenPx.toInt(), 0,
+                0, 0, (velocityScreenPx * flingVelocityScale).toInt(), 0,
                 Int.MIN_VALUE / 2, Int.MAX_VALUE / 2, 0, 0,
             )
             flinging = true
