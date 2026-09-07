@@ -475,7 +475,12 @@ class PassageFinderView(context: Context) : View(context) {
         if (books.isEmpty()) return
         bookLane.layout(centreX())
         canvas.save()
-        canvas.clipRect(bookRect)
+        // The selected spine rises above the shelf, so the clip has to let it out. The
+        // gap to the strip above is far wider than the overshoot, so nothing collides.
+        canvas.clipRect(
+            bookRect.left, bookRect.top - metrics.spineFocusOvershoot,
+            bookRect.right, bookRect.bottom,
+        )
         val range = bookLane.visibleRange(width.toFloat())
         val centred = bookLane.nearestIndex()
         for (i in range) {
@@ -499,6 +504,7 @@ class PassageFinderView(context: Context) : View(context) {
             bottom = bookRect.bottom,
             proximity = bookLane.proximities[index],
             sizeFactor = bookLane.sizeFactors[index],
+            focusFactor = bookLane.focusFactors[index],
             isGroupStart = isGroupStart,
             isOpenBook = index == state.openBookIndex,
         )
@@ -937,7 +943,7 @@ class PassageFinderView(context: Context) : View(context) {
         bookLane.layout(centreX())
         for (i in bookLane.visibleRange(width.toFloat())) {
             val left = bookLane.lefts[i]
-            val top = bookRect.bottom - metrics.spineMaxHeight
+            val top = bookRect.bottom - metrics.spineMaxHeight - metrics.spineFocusOvershoot
             nodes.add(
                 A11yNode(
                     id = PassageFinderA11yHelper.ID_BOOK_BASE + i,

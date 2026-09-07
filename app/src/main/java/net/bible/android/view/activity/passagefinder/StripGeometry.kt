@@ -188,6 +188,19 @@ class LensLane : StripLane {
     var sizeFactors: FloatArray = FloatArray(0)
         private set
 
+    /**
+     * How close each item is to being *the* selected one: 1 at its snap point, falling to
+     * 0 one item away. Valid after [layout].
+     *
+     * The lens alone cannot answer this. Its radius spans many items, so neighbours sit
+     * near the top of the bell and come out within a few percent of the centre's size —
+     * which is exactly why the selected spine was hard to pick out. This falls off over a
+     * single item instead, so only the selected one is marked, and it crossfades to its
+     * neighbour as the strip scrolls rather than popping.
+     */
+    var focusFactors: FloatArray = FloatArray(0)
+        private set
+
     override var localScale: Float = 1f
         private set
 
@@ -206,6 +219,7 @@ class LensLane : StripLane {
         lefts = FloatArray(n)
         proximities = FloatArray(n)
         sizeFactors = FloatArray(n)
+        focusFactors = FloatArray(n)
         var acc = 0f
         for (i in 0 until n) {
             baseSpans[i] = widthsPx[i] + gapPx
@@ -253,6 +267,7 @@ class LensLane : StripLane {
             proximities[i] = (1f - distance).coerceIn(0f, 1f)
             val bell = bellFalloff(distance, lensFalloff)
             sizeFactors[i] = bell
+            focusFactors[i] = (1f - abs(centre - scroll) / baseSpans[i]).coerceIn(0f, 1f)
             widths[i] = lerp(baseWidths[i], lensWidthPx, bell)
         }
 

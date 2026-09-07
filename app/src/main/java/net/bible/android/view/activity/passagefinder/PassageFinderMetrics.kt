@@ -67,6 +67,16 @@ class PassageFinderMetrics(private val displayMetrics: DisplayMetrics) {
 
     val spineCornerRadius = dp(2f)
 
+    /**
+     * How far the selected spine rises above the rest of the shelf.
+     *
+     * The lens is wide enough that a spine one place off centre is within a few percent
+     * of the selected one's height, so magnification alone does not say which is picked.
+     * Raising only the selected spine clear of its neighbours does, the way a book pulled
+     * half out of a shelf stands proud of the row.
+     */
+    val spineFocusOvershoot = dp(12f)
+
     /** Height of the bar marking the book currently open in the reader. */
     val openBookMarkerHeight = dp(4f)
 

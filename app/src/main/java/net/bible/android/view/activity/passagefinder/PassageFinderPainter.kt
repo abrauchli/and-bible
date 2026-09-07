@@ -127,6 +127,8 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
      *
      * @param proximity linear lens proximity, driving fade, relief and text weight.
      * @param sizeFactor bell-shaped magnification, driving width and height.
+     * @param focusFactor 1 for the selected spine, 0 one place away; raises it clear of
+     *   the shelf so the selection is unmistakable.
      * @param isGroupStart whether a divider marks the start of a new biblical category.
      * @param isOpenBook whether this is the book currently open in the reader.
      */
@@ -138,10 +140,12 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         bottom: Float,
         proximity: Float,
         sizeFactor: Float,
+        focusFactor: Float,
         isGroupStart: Boolean,
         isOpenBook: Boolean,
     ) {
-        val height = lerp(metrics.spineMinHeight, metrics.spineMaxHeight, sizeFactor)
+        val height = lerp(metrics.spineMinHeight, metrics.spineMaxHeight, sizeFactor) +
+            metrics.spineFocusOvershoot * focusFactor
         val top = bottom - height
 
         // The Compose spine sat in a graphicsLayer with this alpha. Folding it into each

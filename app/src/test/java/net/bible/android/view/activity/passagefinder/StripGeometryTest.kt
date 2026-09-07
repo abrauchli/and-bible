@@ -208,6 +208,54 @@ class StripGeometryTest {
     }
 
     @Test
+    fun `focus marks only the selected spine, unlike the lens`() {
+        // The point of the focus factor: the lens spans many spines, so a neighbour sits
+        // near the top of the bell and comes out almost the same size as the selected
+        // one — which is why the selection was hard to see. Focus has to discriminate
+        // sharply where the bell does not.
+        val lane = lensLane()
+        lane.scroll = lane.snapPointFor(33)
+        lane.layout(centre)
+
+        assertEquals("the selected spine is fully focused", 1f, lane.focusFactors[33])
+        assertEquals(0f, lane.focusFactors[35])
+        assertEquals(0f, lane.focusFactors[31])
+        assertTrue(
+            "the immediate neighbour must be clearly less focused",
+            lane.focusFactors[34] < 0.2f,
+        )
+        // The bell, by contrast, barely separates them at all — the problem being solved.
+        assertTrue(
+            "the lens alone cannot distinguish the selection",
+            lane.sizeFactors[34] > 0.8f,
+        )
+    }
+
+    @Test
+    fun `focus crossfades between neighbours while scrolling`() {
+        // Focus drives how far the selected spine rises, so it must hand over smoothly
+        // rather than pop as the strip scrolls from one book to the next.
+        val lane = lensLane()
+        val from = lane.snapPointFor(20)
+        val to = lane.snapPointFor(21)
+        var previous = 1f
+        val steps = 60
+        for (step in 0..steps) {
+            lane.scroll = from + (to - from) * step / steps
+            lane.layout(centre)
+            val leaving = lane.focusFactors[20]
+            val arriving = lane.focusFactors[21]
+            assertTrue("focus on the outgoing spine must not rise", leaving <= previous + 1e-4f)
+            assertTrue(
+                "one of the two must always be focused, so nothing sits flat mid-scroll",
+                leaving + arriving > 0.9f,
+            )
+            previous = leaving
+        }
+        assertEquals("focus lands fully on the new spine", 1f, lane.focusFactors[21])
+    }
+
+    @Test
     fun `local scale reflects magnification so drags track the finger`() {
         val lane = lensLane()
         lane.scroll = lane.snapPointFor(33)
