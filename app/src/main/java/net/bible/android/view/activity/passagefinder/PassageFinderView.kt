@@ -294,9 +294,8 @@ class PassageFinderView(context: Context) : View(context) {
     private fun finishHide() {
         dismissing = false
         // INVISIBLE rather than GONE: a GONE view is skipped during measurement, so every
-        // open and close would force a fresh layout pass over the whole DrawerLayout —
-        // including the Bible WebView, which abandons an in-flight fling when that
-        // happens. INVISIBLE keeps the overlay laid out and costs only a skipped draw.
+        // open and close would force a fresh layout pass over the whole DrawerLayout.
+        // INVISIBLE keeps the overlay laid out and costs only a skipped draw.
         visibility = INVISIBLE
     }
 

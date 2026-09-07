@@ -88,9 +88,9 @@ class PassageFinderLauncher(
      * nothing the user is waiting on.
      */
     fun warmUp() {
-        // Build and attach the overlay now, so the tap itself never has to add a view to
-        // the DrawerLayout — that would lay the whole hierarchy out again, and the Bible
-        // WebView drops an in-flight fling when it is laid out.
+        // Build and attach the overlay now, so opening it never has to add a view to the
+        // DrawerLayout — that lays the whole hierarchy out again, which is work this
+        // widget exists to avoid doing on the path between the gesture and the first frame.
         ensureView()
         if (dataSource.cachedBooks() != null) return
         activity.lifecycleScope.launch {

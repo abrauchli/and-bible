@@ -83,14 +83,19 @@ class BibleGestureListener(
 
             // test vertical distance, make sure it's a swipe
             if (vertical > scaledMinimumDistance) {
-                // Fast vertical fling opens PassageFinder when enabled
+                // Fast vertical fling opens PassageFinder when enabled.
+                //
+                // The fling is deliberately NOT consumed. Returning true here would stop
+                // the event reaching the WebView, which is what made the text appear to
+                // halt the instant the widget appeared — it was never really stopping,
+                // the fling simply never started. Letting it through means the reader
+                // keeps gliding underneath while the widget follows along, tracking the
+                // scroll through CurrentVerseChangedEvent.
                 if (CommonUtils.settings.getBoolean("passage_finder_enabled", false)
                     && abs(velocityY) > minScaledVelocity * 3
                     && !mainBibleActivity.passageFinderLauncher.isVisible
-                    && mainBibleActivity.passageFinderLauncher.show()
                 ) {
-                    // Only consume the fling if the widget actually opened.
-                    return true
+                    mainBibleActivity.passageFinderLauncher.show()
                 }
                 return false
             } else if (horizontal > scaledMinimumDistance && Math.abs(velocityX) > minScaledVelocity) {
