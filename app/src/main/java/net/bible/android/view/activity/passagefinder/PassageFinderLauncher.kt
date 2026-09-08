@@ -137,6 +137,21 @@ class PassageFinderLauncher(
             // fill it in when the list arrives, rather than making the user wait on disk.
             finder.setBooks(emptyList(), IntArray(0))
             viewModel.showLoading()
+        }
+
+        // Open the view before subscribing, not after. `uiState` is a StateFlow and
+        // lifecycleScope dispatches on Main.immediate, so on the main thread the collector
+        // replays the current state synchronously inside startCollecting — the first render
+        // can therefore land before the next statement here runs. Preparing the view first
+        // means it is always in its opening state (theme, animation setting, reset scroll
+        // coordinators, snap-on-open flag) by the time any render arrives, whichever way
+        // the dispatcher happens to behave.
+        finder.show()
+        startCollecting(finder)
+
+        if (cached == null) {
+            // Started only now, so the `isShowing` guard below is answered by this open
+            // rather than by whatever the view was doing beforehand.
             loadJob = activity.lifecycleScope.launch {
                 val loaded = try {
                     dataSource.loadBooks()
@@ -154,9 +169,6 @@ class PassageFinderLauncher(
                 viewModel.show(loaded)
             }
         }
-
-        startCollecting(finder)
-        finder.show()
         return true
     }
 

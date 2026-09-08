@@ -134,6 +134,22 @@ class PassageFinderView(context: Context) : View(context) {
     private var cellLabels: Array<String> = emptyArray()
     private var bubbleReference: String = ""
 
+    /**
+     * Set by [show] and consumed by the first [render] of that session.
+     *
+     * A fresh open must place the strips at the passage the reader is on, not glide there
+     * from wherever the previous session left them: the widget is meant to appear already
+     * pointing at the current verse. The view cannot infer that from [state] alone, because
+     * the launcher cancels its state collector before dismissing the ViewModel, so no
+     * `visible = false` render ever arrives and the previous session's state looks live.
+     *
+     * A flag rather than clearing [state], which is what an earlier fix did: [state] is what
+     * tells the strips which cell is the committed selection, and it also drives the tap
+     * hit-test priority, the accessibility nodes' selected flags and the bubble reference.
+     * Clearing it desynchronises all of those from the lanes it just re-centred.
+     */
+    private var pendingOpenSnap = false
+
     // ---- View-local interaction state ----------------------------------------------
 
     /**
@@ -271,25 +287,39 @@ class PassageFinderView(context: Context) : View(context) {
         chapterLane.itemCount = newState.chapterCount.coerceAtLeast(1)
         verseLane.itemCount = newState.verseCount.coerceAtLeast(1)
 
+        // First render of a session: place the strips outright rather than diffing against
+        // a state left over from the previous one.
+        val opening = pendingOpenSnap
+        pendingOpenSnap = false
+
         // Animate a re-centre only when the strips were already showing real content.
         // On a cold open the widget first renders a loading placeholder, which is visible
         // but bookless and parked at book 0 / chapter 1 / verse 1; treating that as a
         // starting position would send the strips spinning all the way to the current
         // verse at the very moment the books appear. Snap instead — that placeholder was
-        // never a position the user chose.
-        val animate = previous.visible && previous.books.isNotEmpty()
+        // never a position the user chose, and neither is a stale selection carried over
+        // from the last time the widget was open.
+        val animate = !opening && previous.visible && previous.books.isNotEmpty()
 
         // Re-center any strip whose selection moved for a reason other than its own
         // settle — a tap, a drill, or a book change resetting chapter and verse to 1.
-        if (newState.selectedBookIndex != previous.selectedBookIndex) {
+        //
+        // On an open every strip is re-centred regardless of the diff. The diff only
+        // answers "did the selection move", which is not the same question as "is the lane
+        // where the selection says it is": closing the widget mid-fling stops the scrollers
+        // without letting them settle, so a lane can be left off its snap point while the
+        // state still names the item it started from.
+        if (opening || newState.selectedBookIndex != previous.selectedBookIndex) {
             recenter(bookScroll, newState.selectedBookIndex, animate = animate)
         }
-        if (newState.selectedChapter != previous.selectedChapter ||
+        if (opening ||
+            newState.selectedChapter != previous.selectedChapter ||
             newState.selectedBookIndex != previous.selectedBookIndex
         ) {
             recenter(chapterScroll, newState.selectedChapter - 1, animate = animate)
         }
-        if (newState.selectedVerse != previous.selectedVerse ||
+        if (opening ||
+            newState.selectedVerse != previous.selectedVerse ||
             newState.selectedChapter != previous.selectedChapter ||
             newState.selectedBookIndex != previous.selectedBookIndex
         ) {
@@ -326,13 +356,12 @@ class PassageFinderView(context: Context) : View(context) {
         chapterScrolling = false
         verseRevealed = true
 
-        // Start every open from a clean slate. The launcher cancels its state collector
-        // before dismissing the ViewModel, so the view never receives the `visible=false`
-        // render: without this reset the previous session's state would still be here,
-        // which would animate the strips in from a stale selection instead of snapping,
-        // and could leave a scroll-settle flag set that silently swallows the first
-        // re-centre of the new session.
-        state = PassageFinderUiState()
+        // Tell the next render this is a fresh open, so it places the strips outright
+        // instead of animating them in from whatever the previous session selected. The
+        // coordinator reset goes with it: a settle in one frame and a dismiss before the
+        // resulting state change is delivered leaves the scroll-settle flag set, which
+        // would silently swallow the first re-centre of the new session.
+        pendingOpenSnap = true
         bookScroll.coordinator.reset()
         chapterScroll.coordinator.reset()
         verseScroll.coordinator.reset()
