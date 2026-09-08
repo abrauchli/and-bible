@@ -252,8 +252,11 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
             strokePaint.shader = null
             strokePaint.color = Color.BLACK
             strokePaint.alpha = (0.5f * 255 * layerAlpha).roundToInt()
-            strokePaint.strokeWidth = 2f
-            canvas.drawLine(left, top + 4f, left, bottom - 4f, strokePaint)
+            strokePaint.strokeWidth = metrics.groupDividerWidth
+            // Tucked in by the spine's corner radius at both ends, so the divider stops
+            // where the rounded corner starts instead of overhanging it.
+            val inset = metrics.spineCornerRadius
+            canvas.drawLine(left, top + inset, left, bottom - inset, strokePaint)
         }
 
         if (isOpenBook) {
@@ -266,9 +269,9 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
             }
             fillPaint.alpha = (255 * layerAlpha).roundToInt()
             canvas.drawRect(
-                left + 1f,
+                left + metrics.openBookMarkerInset,
                 bottom - metrics.openBookMarkerHeight,
-                left + width - 1f,
+                left + width - metrics.openBookMarkerInset,
                 bottom,
                 fillPaint,
             )

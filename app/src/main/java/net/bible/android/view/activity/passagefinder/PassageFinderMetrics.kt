@@ -87,6 +87,17 @@ class PassageFinderMetrics(private val displayMetrics: DisplayMetrics) {
     /** Height of the bar marking the book currently open in the reader. */
     val openBookMarkerHeight = dp(4f)
 
+    /** Side inset of that bar, so it reads as sitting inside the spine rather than under it. */
+    val openBookMarkerInset = dp(1f)
+
+    /**
+     * Stroke width of the divider that marks the start of a new book category.
+     *
+     * A hairline by intent: it separates groups on a shelf whose spines are only 7-14dp
+     * wide with a 2dp gap between them, so anything heavier reads as a spine of its own.
+     */
+    val groupDividerWidth = dp(1f)
+
     val spineMinTextSize = sp(8f)
     val spineMaxTextSize = sp(16f)
 
