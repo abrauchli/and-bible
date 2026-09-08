@@ -159,11 +159,11 @@ class PassageFinderLauncher(
         // freeform or split-screen window, say.
         val onScreen = IntArray(2).also { finder.getLocationOnScreen(it) }
         val inWindow = IntArray(2).also { finder.getLocationInWindow(it) }
-        val statusBarTop = statusBarInset(finder)
+        val contentTop = statusBarBottom(finder)
         finder.show(
             anchorX = anchorRawX?.minus(onScreen[0]),
-            safeTop = ((toolbarBottom() ?: statusBarTop) - inWindow[1]).toFloat(),
-            screenTop = (statusBarTop - inWindow[1]).toFloat(),
+            safeTop = ((toolbarBottom() ?: contentTop) - inWindow[1]).toFloat(),
+            screenTop = (contentTop - inWindow[1]).toFloat(),
         )
         startCollecting(finder)
 
@@ -204,8 +204,14 @@ class PassageFinderLauncher(
         return location[1] + toolbar.height
     }
 
-    /** Top of the window's content area — below the status bar, if there is one. */
-    private fun statusBarInset(overlay: View): Int =
+    /**
+     * Bottom edge of the status bar in window coordinates — 0 when there is none.
+     *
+     * Nothing the finder draws may go above this: the toolbar is inert while the finder is
+     * open so covering it costs the user nothing, but anything above the status bar is off
+     * the screen and simply lost.
+     */
+    private fun statusBarBottom(overlay: View): Int =
         ViewCompat.getRootWindowInsets(overlay)
             ?.getInsets(WindowInsetsCompat.Type.statusBars())
             ?.top
