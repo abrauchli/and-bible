@@ -197,6 +197,7 @@ class PassageFinderView(context: Context) : View(context) {
 
     /**
      * X the stack is centred on, in overlay coordinates: where the opening gesture was.
+     * Null for an open with no gesture behind it, which centres the stack instead.
      *
      * Fixed for the session. The finder is a one-thumb control and, once its width is
      * capped, a centred stack sits under neither thumb; anchoring it to the gesture that
@@ -205,7 +206,7 @@ class PassageFinderView(context: Context) : View(context) {
      * view, so the clamp in [PassageFinderLayoutRules.anchoredContentLeft] discards this
      * entirely and the layout is what it always was.
      */
-    private var anchorX = 0f
+    private var anchorX: Float? = null
 
     /**
      * Bottom of the app toolbar in overlay coordinates — the highest the bubble may go
@@ -395,7 +396,7 @@ class PassageFinderView(context: Context) : View(context) {
 
         this.screenTop = screenTop.coerceAtLeast(0f)
         this.safeTop = safeTop.coerceAtLeast(this.screenTop)
-        this.anchorX = anchorX ?: (width / 2f)
+        this.anchorX = anchorX
         metrics.configure(height.toFloat())
         updateSessionGeometry()
 
@@ -619,7 +620,7 @@ class PassageFinderView(context: Context) : View(context) {
         // The anchor is a position within the old width, so rotating carries the stack to
         // the matching place in the new one rather than snapping it back to the centre —
         // the user's thumb has not moved to the middle of the screen either.
-        if (oldw > 0 && w != oldw) anchorX = anchorX * w / oldw
+        if (oldw > 0 && w != oldw) anchorX = anchorX?.let { it * w / oldw }
         updateSessionGeometry()
     }
 
@@ -631,9 +632,11 @@ class PassageFinderView(context: Context) : View(context) {
      */
     private fun updateSessionGeometry() {
         val viewWidth = width.toFloat()
-        anchorX = anchorX.coerceIn(0f, viewWidth)
+        // Resolved here rather than stored, so an open that lands before the first layout
+        // pass keeps its anchor instead of having it clamped away against a zero width.
+        val anchor = anchorX?.coerceIn(0f, viewWidth) ?: (viewWidth / 2f)
         val contentWidth = minOf(viewWidth, metrics.maxContentWidth)
-        contentLeft = PassageFinderLayoutRules.anchoredContentLeft(anchorX, contentWidth, viewWidth)
+        contentLeft = PassageFinderLayoutRules.anchoredContentLeft(anchor, contentWidth, viewWidth)
         contentRight = contentLeft + contentWidth
         // The panel is opaque, so letting it run under the toolbar would hide the very
         // chrome the user needs to get back out of the finder.
