@@ -49,8 +49,10 @@ import kotlin.math.abs
  * of state that lives here, exactly as they lived in the Compose implementation — hoisting
  * them into the ViewModel would create a write-back loop with the scroll animations.
  *
- * Layout is bottom-anchored and computed fresh in [onDraw] from the animated strip
- * heights; there are no child views, so nothing needs measuring or laying out per frame.
+ * Layout is bottom-anchored. The vertical rects are computed fresh in [onDraw] from the
+ * animated strip heights, while everything that depends only on the viewport and the
+ * opening gesture is settled once in [updateSessionGeometry]. There are no child views, so
+ * nothing needs measuring or laying out per frame.
  */
 class PassageFinderView(context: Context) : View(context) {
 
@@ -191,10 +193,37 @@ class PassageFinderView(context: Context) : View(context) {
     /** Set while the exit animation runs; the view hides itself when it completes. */
     private var dismissing = false
 
-    // ---- Geometry, recomputed per frame --------------------------------------------
+    // ---- Session geometry, fixed between size changes ------------------------------
+
+    /**
+     * X the stack is centred on, in overlay coordinates: where the opening gesture was.
+     *
+     * Fixed for the session. The finder is a one-thumb control and, once its width is
+     * capped, a centred stack sits under neither thumb; anchoring it to the gesture that
+     * summoned it puts it under whichever thumb the user actually reached with, which is
+     * also why this needs no handedness setting. In portrait the stack is as wide as the
+     * view, so the clamp in [PassageFinderLayoutRules.anchoredContentLeft] discards this
+     * entirely and the layout is what it always was.
+     */
+    private var anchorX = 0f
+
+    /**
+     * Bottom of the app toolbar in overlay coordinates — the highest the bubble may go
+     * before it starts covering chrome. Supplied by the launcher on each [show].
+     */
+    private var safeTop = 0f
+
+    /** Top of the screen's own content area; the bubble is never allowed above this. */
+    private var screenTop = 0f
 
     private var contentLeft = 0f
     private var contentRight = 0f
+
+    /** Top edge of the gradient panel, held clear of the toolbar. */
+    private var panelTop = 0f
+
+    // ---- Geometry, recomputed per frame --------------------------------------------
+
     private val bookRect = RectF()
     private val chapterRect = RectF()
     private val verseRect = RectF()
@@ -208,6 +237,9 @@ class PassageFinderView(context: Context) : View(context) {
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val minFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maxFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
+
+    /** Above this a stationary finger is a resting thumb rather than a tap; see the UP handler. */
+    private val longPressTimeout = ViewConfiguration.getLongPressTimeout().toLong()
     private var velocityTracker: VelocityTracker? = null
 
     private var downX = 0f
@@ -343,13 +375,29 @@ class PassageFinderView(context: Context) : View(context) {
      *
      * Reads the theme and animation settings on every open, since the user can change
      * them between openings without the view being recreated.
+     *
+     * @param anchorX x of the gesture that opened the finder, in overlay coordinates, or
+     *   null when there was no gesture — an accessibility action, a keyboard, or the
+     *   fallback path taken when the module turns out to have no books. The stack is
+     *   placed under the gesture; with none it falls back to the centre.
+     * @param safeTop bottom edge of the app toolbar in overlay coordinates, or the
+     *   status-bar inset when the toolbar is hidden. The panel and the preview bubble both
+     *   stay below it.
+     * @param screenTop the status-bar inset. The bubble may cover the toolbar on a screen
+     *   too short to hold it below [safeTop], but never goes above this.
      */
-    fun show() {
+    fun show(anchorX: Float?, safeTop: Float, screenTop: Float) {
         isDarkTheme = ScreenSettings.nightMode
         isMonochrome = CommonUtils.settings.monochromeMode
         disableAnimations = CommonUtils.settings.disableAnimations
         painter.applyTheme(isDarkTheme, isMonochrome)
         applyAnimationSetting()
+
+        this.screenTop = screenTop.coerceAtLeast(0f)
+        this.safeTop = safeTop.coerceAtLeast(this.screenTop)
+        this.anchorX = anchorX ?: (width / 2f)
+        metrics.configure(height.toFloat())
+        updateSessionGeometry()
 
         dismissing = false
         bookScrolling = false
@@ -491,9 +539,7 @@ class PassageFinderView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(0f, slideOffset)
 
-        painter.drawPanel(
-            canvas, contentLeft, height - metrics.panelHeight, contentRight, height.toFloat(),
-        )
+        painter.drawPanel(canvas, contentLeft, panelTop, contentRight, height.toFloat())
 
         if (loading) {
             painter.drawSkeleton(canvas, contentLeft, contentRight, bookRect.bottom)
@@ -548,12 +594,13 @@ class PassageFinderView(context: Context) : View(context) {
      * Computes the bottom-anchored stack: book strip at the bottom, then chapter, verse
      * and the bubble above it, separated by a constant gap. Collapsed strips keep their
      * gaps, so the strips above do not shift as one hides.
+     *
+     * Reads the session geometry rather than deriving it: the horizontal placement, the
+     * panel top and the bubble's line budget all depend only on the anchor and the
+     * viewport, so they are settled once in [updateSessionGeometry] and left alone here,
+     * which runs on every frame.
      */
     private fun layoutStrips() {
-        val contentWidth = minOf(width.toFloat(), metrics.maxContentWidth)
-        contentLeft = (width - contentWidth) / 2f
-        contentRight = contentLeft + contentWidth
-
         slideOffset = (1f - showAnim.value) * height
 
         val bookBottom = height - metrics.stackBottomPadding
@@ -564,6 +611,58 @@ class PassageFinderView(context: Context) : View(context) {
 
         val verseBottom = chapterRect.top - metrics.stripSpacing
         verseRect.set(contentLeft, verseBottom - verseHeight.value, contentRight, verseBottom)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        metrics.configure(h.toFloat())
+        // The anchor is a position within the old width, so rotating carries the stack to
+        // the matching place in the new one rather than snapping it back to the centre —
+        // the user's thumb has not moved to the middle of the screen either.
+        if (oldw > 0 && w != oldw) anchorX = anchorX * w / oldw
+        updateSessionGeometry()
+    }
+
+    /**
+     * Settles everything that depends on the viewport and the opening gesture rather than
+     * on the animation clock, so no frame has to work any of it out again.
+     *
+     * Called from [show] and [onSizeChanged] — the only two moments either can change.
+     */
+    private fun updateSessionGeometry() {
+        val viewWidth = width.toFloat()
+        anchorX = anchorX.coerceIn(0f, viewWidth)
+        val contentWidth = minOf(viewWidth, metrics.maxContentWidth)
+        contentLeft = PassageFinderLayoutRules.anchoredContentLeft(anchorX, contentWidth, viewWidth)
+        contentRight = contentLeft + contentWidth
+        // The panel is opaque, so letting it run under the toolbar would hide the very
+        // chrome the user needs to get back out of the finder.
+        panelTop = maxOf(height - metrics.panelHeight, safeTop)
+        bubble.configure(computeBubbleMaxLines())
+    }
+
+    /**
+     * How many lines of verse text fit between the toolbar and the verse strip.
+     *
+     * Derived from measured font metrics rather than a table of heights, so a large system
+     * font scale costs the bubble a line instead of pushing it off the top of the screen.
+     *
+     * Measured against the verse strip's *fully revealed* top rather than its animated
+     * one. The strip springs open and shut as the user drills between levels, so budgeting
+     * against the live height would walk the line count up and down throughout, rebuilding
+     * the bubble's [android.text.StaticLayout] on most frames of every reveal.
+     */
+    private fun computeBubbleMaxLines(): Int {
+        val verseTopTarget = height - metrics.stackBottomPadding - metrics.bookStripHeight -
+            metrics.stripSpacing - metrics.chapterStripHeight -
+            metrics.stripSpacing - metrics.verseStripHeight
+        return PassageFinderLayoutRules.bubbleMaxLines(
+            room = verseTopTarget - safeTop,
+            gap = metrics.bubbleGap,
+            chrome = metrics.bubblePaddingVertical * 2f + painter.referenceLineHeight(),
+            lineHeight = bubble.verseLineHeight(),
+            maxLines = metrics.bubbleMaxVerseLines,
+        )
     }
 
     private fun drawBookStrip(canvas: Canvas) {
@@ -711,15 +810,19 @@ class PassageFinderView(context: Context) : View(context) {
         }
         books.getOrNull(state.selectedBookIndex) ?: return
         val reference = bubbleReference
-        val maxWidth = minOf(metrics.bubbleMaxWidth, contentRight - contentLeft)
-        // The bubble sits a gap above the verse strip, plus its own bottom padding —
-        // matching the Compose column's spacing plus the bubble's own bottom padding.
-        val bottom = verseRect.top - metrics.stripSpacing * 2f
+        val maxWidth = minOf(metrics.bubbleMaxWidth, contentWidth())
+        // The bubble sits a gap above the verse strip. It tracks the animated strip, so it
+        // rides up and down with the reveal instead of hanging in space above it, while
+        // the number of lines it may hold was budgeted against the fully revealed strip.
+        val bottom = verseRect.top - metrics.bubbleGap
         // Resolved layout direction, read straight off the view — no allocation, and it
         // is what decides which edge of the verse block the placeholder dots align to.
         val isRtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        // The slide is applied by the caller's canvas translation, so undo it here: the
+        // floor is a screen position, not one that should ride up with the stack.
         bubble.draw(
-            canvas, reference, previewText, centreX(), bottom, maxWidth, alpha, isRtl, bubbleRect,
+            canvas, reference, previewText, centreX(), bottom, maxWidth,
+            screenTop - slideOffset, alpha, isRtl, bubbleRect,
         )
     }
 
@@ -779,12 +882,16 @@ class PassageFinderView(context: Context) : View(context) {
                 lastX = x
                 lockedVertical = null
                 cumulativeVertical = 0f
-                activeScroller = bandAt(y)
+                activeScroller = bandAt(x, y)
                 val onBubble = !bubbleRect.isEmpty && bubbleRect.contains(x, y)
-                // Anything clear of the strips and the bubble belongs to the reader
-                // showing through above them, so the touch is handed straight to it. That
-                // way a finger put down there stops the glide and scrolls the text in one
-                // motion, instead of the overlay swallowing it.
+                // Anything clear of the strips and the bubble — above them, or beside them
+                // in landscape — belongs to the reader showing through, so the touch is
+                // handed straight to it. That way a finger put down there stops the glide
+                // and scrolls the text in one motion, instead of the overlay swallowing it.
+                //
+                // Ownership is decided here and holds for the whole gesture, even if the
+                // finger later crosses into the widget or out of it: a scroll that changed
+                // hands halfway would jump under the finger.
                 readerGesture = activeScroller == null && !onBubble && onReaderTouch != null
                 isBeingTouched = !readerGesture
                 if (readerGesture) {
@@ -829,17 +936,22 @@ class PassageFinderView(context: Context) : View(context) {
                 if (readerGesture) {
                     val moved = abs(x - downX) > touchSlop || abs(y - downY) > touchSlop
                     if (moved) {
-                        // A real lift, so the reader flings on from here as usual.
+                        // A real scroll, so lift for real and let the reader fling on from
+                        // here. The finder stays open and re-centres itself on the verse
+                        // the reader lands on, once it reports one.
                         onReaderTouch?.invoke(event)
                     } else {
-                        // A tap, not a scroll: cancel rather than lift, so the page sees
-                        // no click — it must not select a verse on the way out — and then
-                        // dismiss, which is what a tap outside the strips has always done.
-                        val cancel = MotionEvent.obtain(event)
-                        cancel.action = MotionEvent.ACTION_CANCEL
-                        onReaderTouch?.invoke(cancel)
-                        cancel.recycle()
-                        onDismiss?.invoke()
+                        // Stationary. Either way the page must see no click — it must not
+                        // select a verse on the way out — so cancel rather than lift.
+                        forwardCancel(event)
+                        // Past the long-press timeout this is a thumb resting on the
+                        // screen, which in a two-handed landscape grip is simply how the
+                        // phone is held. Dismissing on that would make holding the device
+                        // close the finder. Below it, it is the deliberate tap outside the
+                        // strips that has always dismissed.
+                        if (event.eventTime - event.downTime < longPressTimeout) {
+                            onDismiss?.invoke()
+                        }
                     }
                     endGesture()
                     return true
@@ -868,6 +980,19 @@ class PassageFinderView(context: Context) : View(context) {
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    /**
+     * Replays [event] on the reader as a cancellation.
+     *
+     * A cancel unwinds whatever the page started on the down — the pressed state, any
+     * pending link activation — without it counting as a click.
+     */
+    private fun forwardCancel(event: MotionEvent) {
+        val cancel = MotionEvent.obtain(event)
+        cancel.action = MotionEvent.ACTION_CANCEL
+        onReaderTouch?.invoke(cancel)
+        cancel.recycle()
     }
 
     private fun endGesture() {
@@ -908,14 +1033,23 @@ class PassageFinderView(context: Context) : View(context) {
     }
 
     /**
-     * Maps a y coordinate onto the strip that owns it, for both drags and taps.
+     * Maps a touch point onto the strip that owns it, for both drags and taps.
      *
      * Each strip claims a band reaching half way into the gaps on either side, so the
      * stack has no dead rows between the strips — a finger aimed at a spine but landing a
      * few dp high still scrolls the books rather than doing nothing, or worse, dismissing.
      * The book strip's band runs to the bottom edge, absorbing the padding below it.
+     *
+     * The bands are bounded horizontally as well. Testing y alone was right only while the
+     * strips spanned the whole width, which is true in portrait and false in landscape,
+     * where the stack is capped at 480dp and the reader shows through down both margins: a
+     * finger there at strip height was claimed by a strip, so dragging sideways scrolled
+     * it and dragging down drilled up — which at book level closes the finder. There is
+     * one rule for every point outside the stack, whether it lies above it or beside it.
      */
-    private fun bandAt(y: Float): LaneScroller? {
+    private fun bandAt(x: Float, y: Float): LaneScroller? {
+        val slop = metrics.stripHitSlopHorizontal
+        if (x < contentLeft - slop || x > contentRight + slop) return null
         val margin = metrics.stripSpacing / 2f
         if (y >= bookRect.top - margin) return bookScroll
         if (chapterRect.height() > 0.5f && y >= chapterRect.top - margin) return chapterScroll
@@ -1009,7 +1143,7 @@ class PassageFinderView(context: Context) : View(context) {
             onConfirm?.invoke()
             return
         }
-        when (bandAt(y)) {
+        when (bandAt(x, y)) {
             bookScroll -> {
                 if (loading || books.isEmpty()) return
                 val index = bookIndexAt(x)

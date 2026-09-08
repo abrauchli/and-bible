@@ -95,7 +95,9 @@ class BibleGestureListener(
                     && abs(velocityY) > minScaledVelocity * 3
                     && !mainBibleActivity.passageFinderLauncher.isVisible
                 ) {
-                    mainBibleActivity.passageFinderLauncher.show()
+                    // Where the fling started, so the strips land under the thumb that
+                    // threw it rather than in the middle of a landscape screen.
+                    mainBibleActivity.passageFinderLauncher.show(flingEv.rawX)
                 }
                 return false
             } else if (horizontal > scaledMinimumDistance && Math.abs(velocityX) > minScaledVelocity) {

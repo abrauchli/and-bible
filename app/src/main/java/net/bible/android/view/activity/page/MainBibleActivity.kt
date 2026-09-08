@@ -766,8 +766,11 @@ class MainBibleActivity : CustomTitlebarActivityBase() {
             }
 
             override fun onSingleTapUp(e: MotionEvent): Boolean {
+                // The tap position anchors the finder's strips under the thumb that opened
+                // it, which on a landscape screen is the difference between reaching the
+                // widget and not.
                 val passageFinderShown = CommonUtils.settings.getBoolean("passage_finder_enabled", false)
-                    && passageFinderLauncher.show()
+                    && passageFinderLauncher.show(e.rawX)
                 if (!passageFinderShown) {
                     // Fall back to the legacy key chooser when the passage finder is
                     // disabled or refused to open (e.g. the active module has no books).

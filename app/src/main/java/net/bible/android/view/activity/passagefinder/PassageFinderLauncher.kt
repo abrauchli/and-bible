@@ -21,6 +21,8 @@ import android.util.Log
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
@@ -109,12 +111,17 @@ class PassageFinderLauncher(
     /**
      * Opens the passage finder overlay.
      *
+     * @param anchorRawX raw screen x of the gesture that asked for the finder, so the
+     *   stack can be placed under the thumb that summoned it. Raw screen coordinates
+     *   rather than the source view's, because the gesture arrives from either the Bible
+     *   view or the title bar and only the screen frame is common to both. Null when there
+     *   was no gesture at all — an accessibility action or a keyboard — which centres it.
      * @return true if the overlay was shown. False only when the book list is already
      *   known and empty, in which case the caller should use the legacy chooser; when the
      *   list has yet to load this returns true and [onNoBooks] fires later if it turns
      *   out to be empty.
      */
-    fun show(): Boolean {
+    fun show(anchorRawX: Float? = null): Boolean {
         // Only Bibles and commentaries are navigated by book/chapter/verse. Every other
         // page type has its own chooser, and `currentPassageDocument` quietly falls back
         // to the Bible for them — so without this the finder would open over a dictionary
@@ -146,7 +153,18 @@ class PassageFinderLauncher(
         // means it is always in its opening state (theme, animation setting, reset scroll
         // coordinators, snap-on-open flag) by the time any render arrives, whichever way
         // the dispatcher happens to behave.
-        finder.show()
+        // The anchor arrives in screen coordinates and the vertical bounds are measured in
+        // window coordinates, so each is converted through the overlay's position in its
+        // own frame. The two differ whenever the window does not fill the display — a
+        // freeform or split-screen window, say.
+        val onScreen = IntArray(2).also { finder.getLocationOnScreen(it) }
+        val inWindow = IntArray(2).also { finder.getLocationInWindow(it) }
+        val statusBarTop = statusBarInset(finder)
+        finder.show(
+            anchorX = anchorRawX?.minus(onScreen[0]),
+            safeTop = ((toolbarBottom() ?: statusBarTop) - inWindow[1]).toFloat(),
+            screenTop = (statusBarTop - inWindow[1]).toFloat(),
+        )
         startCollecting(finder)
 
         if (cached == null) {
@@ -171,6 +189,27 @@ class PassageFinderLauncher(
         }
         return true
     }
+
+    /**
+     * Bottom of the app toolbar in window coordinates, or null while it is hidden.
+     *
+     * This is the floor the finder's panel and preview bubble stay below, so the toolbar
+     * is never buried under an opaque overlay the user then cannot get out from behind.
+     * In full-screen mode there is no toolbar and the caller falls back to the status bar.
+     */
+    private fun toolbarBottom(): Int? {
+        val toolbar = activity.binding.toolbarLayout
+        if (toolbar.visibility != View.VISIBLE) return null
+        val location = IntArray(2).also { toolbar.getLocationInWindow(it) }
+        return location[1] + toolbar.height
+    }
+
+    /** Top of the window's content area — below the status bar, if there is one. */
+    private fun statusBarInset(overlay: View): Int =
+        ViewCompat.getRootWindowInsets(overlay)
+            ?.getInsets(WindowInsetsCompat.Type.statusBars())
+            ?.top
+            ?: 0
 
     fun hide() {
         loadJob?.cancel()

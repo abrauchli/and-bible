@@ -37,9 +37,10 @@ import kotlin.math.ceil
  * Arabic, Hebrew, and Indic text shape and order correctly, and mixed left-to-right verse
  * references inside right-to-left text land the right way round.
  *
- * Building a layout allocates, so the result is cached and only rebuilt when the text or
- * the available width actually changes. The verse text arrives from a debounced flow, so
- * in practice this is a handful of rebuilds per scroll rather than one per frame.
+ * Building a layout allocates, so the result is cached and only rebuilt when the text, the
+ * available width or the line budget actually changes. The verse text arrives from a
+ * debounced flow and the budget is fixed for a session, so in practice this is a handful
+ * of rebuilds per scroll rather than one per frame.
  *
  * The cache also deliberately outlives the text it was built from: while a verse read is in
  * flight ([PreviewVerseText.Loading]) the bubble draws placeholder dots but keeps sizing
@@ -62,12 +63,54 @@ class PreviewBubbleRenderer(
     private var cachedLayout: StaticLayout? = null
     private var cachedText: String? = null
     private var cachedWidth = -1
+    private var cachedMaxLines = -1
+
+    /**
+     * Lines of verse text there is room to draw; see [configure].
+     *
+     * Starts at the design ceiling so a bubble drawn before the host has measured itself
+     * looks like it always did rather than collapsing to its reference line.
+     */
+    private var maxVerseLines = metrics.bubbleMaxVerseLines
+
+    /**
+     * Sets how many lines of verse text fit above the strips.
+     *
+     * The host works this out from real geometry — the room under the toolbar, measured
+     * font metrics — because a fixed count overflows as soon as the screen is short or the
+     * system font is large, and overflowing here means the verse is clipped mid-sentence.
+     *
+     * The count is part of the layout cache key rather than merely a draw-time limit:
+     * without that, a rotation into landscape would keep reusing the five-line layout it
+     * built in portrait.
+     */
+    fun configure(maxVerseLines: Int) {
+        this.maxVerseLines = maxVerseLines.coerceIn(0, metrics.bubbleMaxVerseLines)
+    }
+
+    /**
+     * Height of one laid-out line of verse text.
+     *
+     * Simply `descent - ascent`: the layout is built with `setIncludePad(false)` and no
+     * line-spacing multiplier, so that is exactly what a [StaticLayout] line comes to
+     * here. Exposed so the host can budget lines against the space it actually has.
+     */
+    fun verseLineHeight(): Float {
+        versePaint.textSize = metrics.bubbleVerseTextSize
+        versePaint.getFontMetrics(fontMetrics)
+        return fontMetrics.descent - fontMetrics.ascent
+    }
 
     /**
      * Draws the bubble centred on [centreX] with its bottom edge at [bottom], and writes
      * the drawn bounds into [outBounds] for hit testing.
      *
      * @param maxWidth widest the bubble may become, including its padding.
+     * @param minTop lowest y the bubble's top edge may reach. Normally slack — the line
+     *   budget already sizes the bubble to fit — this only bites on a screen too short for
+     *   even the reference line, where the bubble slides down off its anchor rather than
+     *   being clipped by the top edge of the screen. Losing pixels to the strip below is
+     *   recoverable; losing them off-screen is not.
      * @param alpha fade level; 0 draws nothing.
      * @param isRtl true when the host view resolved to a right-to-left layout direction,
      *   which mirrors the placeholder dots to the verse block's end edge.
@@ -79,6 +122,7 @@ class PreviewBubbleRenderer(
         centreX: Float,
         bottom: Float,
         maxWidth: Float,
+        minTop: Float,
         alpha: Float,
         isRtl: Boolean,
         outBounds: RectF,
@@ -92,11 +136,19 @@ class PreviewBubbleRenderer(
         val referenceWidth = painter.measureReference(reference)
         val referenceHeight = painter.referenceLineHeight()
 
+        // No room for a line of verse text, so the bubble is its reference line and
+        // nothing else. The placeholder dots go too: dots that can never resolve into text
+        // promise something that is not coming, and sizing from chrome alone is also what
+        // keeps this bubble from moving at all as verses tick past.
+        val referenceOnly = maxVerseLines <= 0
+        if (referenceOnly) discardLayout()
+
         // What the bubble is SIZED from and what it DRAWS part company while a read is in
         // flight: the dots are drawn, but the previous layout still sets the dimensions.
-        val sizingLayout = when (verseText) {
-            is PreviewVerseText.Ready -> verseLayout(verseText.text, innerMaxWidth.toInt())
-            PreviewVerseText.None -> {
+        val sizingLayout = when {
+            referenceOnly -> null
+            verseText is PreviewVerseText.Ready -> verseLayout(verseText.text, innerMaxWidth.toInt())
+            verseText is PreviewVerseText.None -> {
                 discardLayout()
                 null
             }
@@ -104,20 +156,16 @@ class PreviewBubbleRenderer(
             // reference-only and regrowing would give two vertical jumps per verse tick and
             // make it visibly breathe while the user scrolls the strip; keeping the last
             // layout's height and widest line is what holds it still.
-            PreviewVerseText.Loading -> cachedLayout
+            else -> cachedLayout
         }
-        val drawDots = verseText == PreviewVerseText.Loading
+        val drawDots = !referenceOnly && verseText == PreviewVerseText.Loading
 
         var verseWidth = sizingLayout?.let { widestLine(it) } ?: 0f
         var verseHeight = sizingLayout?.height?.toFloat() ?: 0f
         if (drawDots && sizingLayout == null) {
             // Nothing has ever been previewed (first open), so there is no size to hold.
-            // Reserve exactly one verse line, which is what a StaticLayout line comes to
-            // here: the layout is built with setIncludePad(false) and no line-spacing
-            // multiplier, so its line height is simply descent - ascent.
-            versePaint.textSize = metrics.bubbleVerseTextSize
-            versePaint.getFontMetrics(fontMetrics)
-            verseHeight = fontMetrics.descent - fontMetrics.ascent
+            // Reserve exactly one verse line.
+            verseHeight = verseLineHeight()
             verseWidth = metrics.bubbleLoadingDotsWidth
         }
 
@@ -125,11 +173,12 @@ class PreviewBubbleRenderer(
         val bubbleWidth = innerWidth + metrics.bubblePaddingHorizontal * 2f
         val bubbleHeight = referenceHeight + verseHeight + metrics.bubblePaddingVertical * 2f
 
+        val top = maxOf(bottom - bubbleHeight, minTop)
         outBounds.set(
             centreX - bubbleWidth / 2f,
-            bottom - bubbleHeight,
+            top,
             centreX + bubbleWidth / 2f,
-            bottom,
+            top + bubbleHeight,
         )
         painter.drawBubbleBackground(canvas, outBounds, alpha)
 
@@ -207,7 +256,11 @@ class PreviewBubbleRenderer(
             return null
         }
         val cached = cachedLayout
-        if (cached != null && cachedText == text && cachedWidth == width) return cached
+        if (cached != null &&
+            cachedText == text && cachedWidth == width && cachedMaxLines == maxVerseLines
+        ) {
+            return cached
+        }
 
         versePaint.textSize = metrics.bubbleVerseTextSize
         versePaint.color = Color.WHITE
@@ -215,7 +268,7 @@ class PreviewBubbleRenderer(
         val builder = StaticLayout.Builder.obtain(text, 0, text.length, versePaint, width)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setIncludePad(false)
-            .setMaxLines(metrics.bubbleMaxVerseLines)
+            .setMaxLines(maxVerseLines)
             .setEllipsize(TextUtils.TruncateAt.END)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Justification matches the Compose bubble. Below API 26 the text simply
@@ -226,6 +279,7 @@ class PreviewBubbleRenderer(
         cachedLayout = layout
         cachedText = text
         cachedWidth = width
+        cachedMaxLines = maxVerseLines
         return layout
     }
 
