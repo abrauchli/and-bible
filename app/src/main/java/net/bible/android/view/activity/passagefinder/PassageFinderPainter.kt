@@ -77,6 +77,7 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
     /** Rebuilt on size or theme change — its extent is fixed, unlike the spine gradients. */
     private var panelShader: LinearGradient? = null
     private var panelShaderTop = Float.NaN
+    private var panelShaderBottom = Float.NaN
     private var panelShaderColor = 0
 
     /** Opaque backdrop behind the strips; tracks the day/night theme. */
@@ -120,7 +121,16 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         fadeRight: Float,
     ) {
         val colour = panelColor
-        if (panelShader == null || panelShaderTop != top || panelShaderColor != colour) {
+        // Keyed on both edges, not just the top. On a screen too short to hold the panel
+        // the top is pinned to the toolbar, so a resize that changes only the height —
+        // dragging a split-screen divider, a foldable posture change — moves the bottom
+        // while leaving the top exactly where it was. Keying on the top alone would keep a
+        // gradient built for the old height and put the fade in the wrong place.
+        if (panelShader == null ||
+            panelShaderTop != top ||
+            panelShaderBottom != bottom ||
+            panelShaderColor != colour
+        ) {
             panelShader = LinearGradient(
                 0f, top, 0f, bottom,
                 intArrayOf(Color.TRANSPARENT, colour, colour),
@@ -128,6 +138,7 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
                 Shader.TileMode.CLAMP,
             )
             panelShaderTop = top
+            panelShaderBottom = bottom
             panelShaderColor = colour
         }
         gradientPaint.shader = panelShader
