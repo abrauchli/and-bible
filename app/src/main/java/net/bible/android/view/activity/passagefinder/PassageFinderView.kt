@@ -220,6 +220,18 @@ class PassageFinderView(context: Context) : View(context) {
     private var contentLeft = 0f
     private var contentRight = 0f
 
+    /**
+     * How far the panel fades out along each vertical edge.
+     *
+     * Only an edge with the reader showing through beside it gets one: an edge flush with
+     * the screen has nothing to dissolve into, and fading it would just thin the backdrop
+     * at the screen border. So a right-anchored stack fades on its left, a left-anchored
+     * one on its right, a centred stack on both, and a full-width portrait panel on
+     * neither.
+     */
+    private var panelFadeLeft = 0f
+    private var panelFadeRight = 0f
+
     /** Top edge of the gradient panel, held clear of the toolbar. */
     private var panelTop = 0f
 
@@ -540,7 +552,10 @@ class PassageFinderView(context: Context) : View(context) {
         canvas.save()
         canvas.translate(0f, slideOffset)
 
-        painter.drawPanel(canvas, contentLeft, panelTop, contentRight, height.toFloat())
+        painter.drawPanel(
+            canvas, contentLeft, panelTop, contentRight, height.toFloat(),
+            panelFadeLeft, panelFadeRight,
+        )
 
         if (loading) {
             painter.drawSkeleton(canvas, contentLeft, contentRight, bookRect.bottom)
@@ -641,6 +656,8 @@ class PassageFinderView(context: Context) : View(context) {
         // The panel is opaque, so letting it run under the toolbar would hide the very
         // chrome the user needs to get back out of the finder.
         panelTop = maxOf(height - metrics.panelHeight, safeTop)
+        panelFadeLeft = if (contentLeft > 0.5f) metrics.panelEdgeFade else 0f
+        panelFadeRight = if (contentRight < viewWidth - 0.5f) metrics.panelEdgeFade else 0f
         bubble.configure(computeBubbleMaxLines())
     }
 

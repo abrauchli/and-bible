@@ -101,8 +101,24 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
     /**
      * Draws the gradient backdrop: transparent at the top, fully opaque from 15% down.
      * [top] is the panel's top edge; it extends to [bottom].
+     *
+     * [fadeLeft] and [fadeRight] soften the corresponding vertical edge over that many
+     * pixels, each applied only where the panel does not reach the screen edge — so a
+     * stack anchored to the right of a landscape screen fades on its left, one anchored
+     * left fades on its right, and a portrait panel spanning the full width fades on
+     * neither. Where the reader shows through beside the stack, a hard vertical edge
+     * cutting down the middle of the text reads as a rendering seam rather than a
+     * backdrop; the top already fades for the same reason.
      */
-    fun drawPanel(canvas: Canvas, left: Float, top: Float, right: Float, bottom: Float) {
+    fun drawPanel(
+        canvas: Canvas,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        fadeLeft: Float,
+        fadeRight: Float,
+    ) {
         val colour = panelColor
         if (panelShader == null || panelShaderTop != top || panelShaderColor != colour) {
             panelShader = LinearGradient(
@@ -115,9 +131,52 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
             panelShaderColor = colour
         }
         gradientPaint.shader = panelShader
+
+        // Never let the two ramps meet, or the panel would have no solid core left.
+        val half = (right - left) / 2f
+        val rampLeft = fadeLeft.coerceIn(0f, half)
+        val rampRight = fadeRight.coerceIn(0f, half)
+
         gradientPaint.alpha = 255
-        canvas.drawRect(left, top, right, bottom, gradientPaint)
+        canvas.drawRect(left + rampLeft, top, right - rampRight, bottom, gradientPaint)
+        drawEdgeRamp(canvas, left, top, bottom, rampLeft, towardsRight = true)
+        drawEdgeRamp(canvas, right, top, bottom, rampRight, towardsRight = false)
+
         gradientPaint.shader = null
+        gradientPaint.alpha = 255
+    }
+
+    /**
+     * Ramps the panel from transparent at [edgeX] to solid [width] pixels inwards.
+     *
+     * Drawn as slices, with the shader supplying the vertical fade and the paint's alpha
+     * the horizontal one. A mask shader would express the product of the two directly, but
+     * composing two gradients of the same type is not reliably hardware accelerated below
+     * API 28 — and this app still supports API 23 — while an offscreen layer would cost a
+     * buffer on every frame of a widget whose whole point is that it is cheap to draw.
+     * Slices allocate nothing, and the eased ramp puts the finest steps at the faint end
+     * where banding would otherwise show.
+     */
+    private fun drawEdgeRamp(
+        canvas: Canvas,
+        edgeX: Float,
+        top: Float,
+        bottom: Float,
+        width: Float,
+        towardsRight: Boolean,
+    ) {
+        if (width <= 0f) return
+        val step = width / PANEL_FADE_SLICES
+        for (i in 0 until PANEL_FADE_SLICES) {
+            val t = (i + 0.5f) / PANEL_FADE_SLICES
+            gradientPaint.alpha = ((t * t * (3f - 2f * t)) * 255f).roundToInt().coerceIn(0, 255)
+            val offset = i * step
+            if (towardsRight) {
+                canvas.drawRect(edgeX + offset, top, edgeX + offset + step, bottom, gradientPaint)
+            } else {
+                canvas.drawRect(edgeX - offset - step, top, edgeX - offset, bottom, gradientPaint)
+            }
+        }
     }
 
     // ---- Book strip ----------------------------------------------------------------
@@ -503,6 +562,12 @@ class PassageFinderPainter(private val metrics: PassageFinderMetrics) {
         (size / TEXT_SIZE_QUANTUM).roundToInt() * TEXT_SIZE_QUANTUM
 
     private companion object {
+        /**
+         * Slices per panel edge ramp. Enough that the alpha step is invisible against the
+         * text showing through, few enough that the extra draws stay negligible.
+         */
+        const val PANEL_FADE_SLICES = 48
+
         /**
          * Glyph-cache granularity for animated text sizes. Fine enough that the growth
          * still looks continuous, coarse enough that the platform's per-size glyph cache

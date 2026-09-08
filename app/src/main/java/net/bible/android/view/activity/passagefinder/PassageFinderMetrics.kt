@@ -178,6 +178,14 @@ class PassageFinderMetrics(private val displayMetrics: DisplayMetrics) {
     val maxContentWidth = dp(480f)
 
     /**
+     * How far the panel's backdrop fades out along an edge the reader shows through.
+     *
+     * Roughly matches the depth of the fade at the top of the panel, so the backdrop
+     * dissolves into the text at the same rate whichever side it is approached from.
+     */
+    val panelEdgeFade = dp(64f)
+
+    /**
      * How far outside the strips' own span a touch is still treated as aimed at them.
      *
      * Invisible in portrait, where the strips span the full width. In landscape the stack
