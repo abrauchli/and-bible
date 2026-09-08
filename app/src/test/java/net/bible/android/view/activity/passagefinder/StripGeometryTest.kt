@@ -174,7 +174,7 @@ class StripGeometryTest {
             val lane = lensLane().apply { lensFalloff = falloff }
             lane.scroll = lane.snapPointFor(33)
             lane.layout(centre)
-            return lane.visibleRange(viewport).count()
+            return lane.visibleRange(0f, viewport).count()
         }
         assertTrue(
             "a tighter bell should fit at least as many books",
@@ -296,7 +296,7 @@ class StripGeometryTest {
         val lane = lensLane()
         lane.scroll = lane.snapPointFor(33)
         lane.layout(centre)
-        val range = lane.visibleRange(1080f)
+        val range = lane.visibleRange(0f, 1080f)
         val from = lane.lefts[range.first]
         val to = lane.lefts[range.last] + lane.widths[range.last]
 
@@ -313,7 +313,7 @@ class StripGeometryTest {
         val lane = lensLane()
         lane.scroll = lane.snapPointFor(33)
         lane.layout(centre)
-        val range = lane.visibleRange(1080f)
+        val range = lane.visibleRange(0f, 1080f)
         // Dead centre of the gap after spine 30.
         val gapCentre = lane.lefts[30] + lane.widths[30] + gap / 2f
         val nearest = nearestSpine(lane, range, gapCentre)
@@ -344,7 +344,7 @@ class StripGeometryTest {
         assertEquals(0, lane.nearestIndex(5f))
         assertEquals(0f, lane.snapPointFor(3))
         lane.layout(centre) // must not throw
-        assertTrue(lane.visibleRange(1080f).isEmpty())
+        assertTrue(lane.visibleRange(0f, 1080f).isEmpty())
     }
 
     @Test
@@ -362,9 +362,33 @@ class StripGeometryTest {
         val lane = lensLane()
         lane.scroll = lane.snapPointFor(33)
         lane.layout(centre)
-        val range = lane.visibleRange(1080f)
+        val range = lane.visibleRange(0f, 1080f)
         assertTrue("the centred spine must be visible", 33 in range)
         assertTrue("distant spines should be culled", range.first > 0 || range.last < lane.itemCount - 1)
+    }
+
+    @Test
+    fun `visibleRange culls against the strip's own bounds, not the view's`() {
+        // In landscape the strip is capped well below the view width and anchored under
+        // the thumb that opened the finder, so it sits at an arbitrary offset inside the
+        // view. Culling against 0..viewWidth there returns spines that lie entirely beside
+        // the strip; only the clip was hiding them.
+        val stripLeft = 600f
+        val stripRight = 1400f
+        val lane = lensLane()
+        lane.scroll = lane.snapPointFor(33)
+        lane.layout((stripLeft + stripRight) / 2f)
+
+        val bounded = lane.visibleRange(stripLeft, stripRight)
+        val wholeView = lane.visibleRange(0f, 1900f)
+        assertTrue("the centred spine must still be visible", 33 in bounded)
+        assertTrue("bounded culling must be strictly tighter", bounded.count() < wholeView.count())
+        for (i in bounded) {
+            assertTrue(
+                "spine $i is reported visible but lies outside the strip",
+                lane.lefts[i] + lane.widths[i] >= stripLeft && lane.lefts[i] <= stripRight,
+            )
+        }
     }
 
     // ---- UniformLane ---------------------------------------------------------------

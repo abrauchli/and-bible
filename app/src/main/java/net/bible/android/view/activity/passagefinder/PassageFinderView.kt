@@ -576,7 +576,7 @@ class PassageFinderView(context: Context) : View(context) {
             bookRect.left, bookRect.top - metrics.spineFocusOvershoot,
             bookRect.right, bookRect.bottom,
         )
-        val range = bookLane.visibleRange(width.toFloat())
+        val range = bookLane.visibleRange(contentLeft, contentRight)
         val centred = bookLane.nearestIndex()
         for (i in range) {
             // The centred spine is drawn last so it overlaps its neighbours, matching
@@ -632,7 +632,7 @@ class PassageFinderView(context: Context) : View(context) {
         canvas.clipRect(rect)
         // Cells overflow their pitch when magnified, so extend the range by the widest
         // possible cell to avoid popping at the edges.
-        val range = lane.visibleRange(width.toFloat(), cellSize * maxScale * metrics.cellMaxAspect)
+        val range = lane.visibleRange(contentWidth(), cellSize * maxScale * metrics.cellMaxAspect)
 
         fun drawCell(i: Int) {
             if (i !in range) return
@@ -724,6 +724,9 @@ class PassageFinderView(context: Context) : View(context) {
     }
 
     private fun centreX(): Float = (contentLeft + contentRight) / 2f
+
+    /** Width of the strip stack, which on a wide screen is narrower than the view. */
+    private fun contentWidth(): Float = contentRight - contentLeft
 
     /**
      * Recomputes the layout rects and spine positions that drawing normally produces.
@@ -1041,7 +1044,7 @@ class PassageFinderView(context: Context) : View(context) {
      * a miss, so the gap between two spines belongs to whichever is nearer.
      */
     private fun bookIndexAt(x: Float): Int {
-        val range = bookLane.visibleRange(width.toFloat())
+        val range = bookLane.visibleRange(contentLeft, contentRight)
         if (range.isEmpty()) return state.selectedBookIndex
         var nearest = range.first
         var nearestDistance = Float.MAX_VALUE
@@ -1079,7 +1082,7 @@ class PassageFinderView(context: Context) : View(context) {
         val textSize = if (isChapterStrip) metrics.chapterTextSize else metrics.verseTextSize
         val centre = centreX()
         val centred = lane.nearestIndex()
-        val range = lane.visibleRange(width.toFloat(), cellSize * maxScale * metrics.cellMaxAspect)
+        val range = lane.visibleRange(contentWidth(), cellSize * maxScale * metrics.cellMaxAspect)
         if (range.isEmpty()) return centred
 
         fun hits(i: Int): Boolean {
@@ -1121,7 +1124,7 @@ class PassageFinderView(context: Context) : View(context) {
         ensureGeometry()
         val offset = slideOffset.toInt()
 
-        for (i in bookLane.visibleRange(width.toFloat())) {
+        for (i in bookLane.visibleRange(contentLeft, contentRight)) {
             val left = bookLane.lefts[i]
             val top = bookRect.bottom - metrics.spineMaxHeight - metrics.spineFocusOvershoot
             nodes.add(
@@ -1194,7 +1197,7 @@ class PassageFinderView(context: Context) : View(context) {
         // drawn — contains the centre point and wins, so explore-by-touch on the focused
         // verse announced one a couple of places away and activating it drilled into the
         // wrong chapter.
-        val range = lane.visibleRange(width.toFloat(), widest)
+        val range = lane.visibleRange(contentWidth(), widest)
         if (range.isEmpty()) return
         val centred = lane.nearestIndex().coerceIn(range.first, range.last)
         val order = IntArray(range.last - range.first + 1)

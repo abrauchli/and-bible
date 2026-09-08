@@ -108,7 +108,13 @@ class UniformLane : StripLane {
     fun proximity(index: Int, radiusPx: Float): Float =
         (1f - abs(offsetFromCentre(index)) / radiusPx).coerceIn(0f, 1f)
 
-    /** Index range that can be visible in a viewport of [viewportWidth] pixels, inclusive. */
+    /**
+     * Index range that can be visible in a viewport of [viewportWidth] pixels, inclusive.
+     *
+     * Measured symmetrically about the viewport centre, which is where [scroll] sits by
+     * definition, so this needs the strip's own width and not the host view's — passing
+     * the latter for a strip narrower than its view just returns cells the clip discards.
+     */
     fun visibleRange(viewportWidth: Float, marginPx: Float): IntRange {
         if (itemCount <= 0) return IntRange.EMPTY
         val half = viewportWidth / 2f + marginPx
@@ -318,8 +324,15 @@ class LensLane : StripLane {
         return lo
     }
 
-    /** Index range whose magnified boxes intersect a viewport of [viewportWidth] pixels. */
-    fun visibleRange(viewportWidth: Float): IntRange {
+    /**
+     * Index range whose magnified boxes intersect the span [viewportLeft]..[viewportRight].
+     *
+     * Bounds rather than a width, because [lefts] are absolute positions in the host
+     * view's coordinates: a strip narrower than its view sits at an arbitrary offset
+     * within it, and testing against 0..width would then return spines lying outside the
+     * strip entirely — correct only because the caller clips them away again.
+     */
+    fun visibleRange(viewportLeft: Float, viewportRight: Float): IntRange {
         val n = itemCount
         if (n == 0) return IntRange.EMPTY
         var first = -1
@@ -327,7 +340,7 @@ class LensLane : StripLane {
         for (i in 0 until n) {
             val l = lefts[i]
             val r = l + widths[i]
-            if (r >= 0f && l <= viewportWidth) {
+            if (r >= viewportLeft && l <= viewportRight) {
                 if (first < 0) first = i
                 last = i
             } else if (first >= 0) {
