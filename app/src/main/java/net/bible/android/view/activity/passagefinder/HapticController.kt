@@ -25,17 +25,16 @@ import android.view.View
 /**
  * Centralized haptic feedback controller for the PassageFinder widget.
  *
- * Uses [View.performHapticFeedback] which requires no VIBRATE permission and
- * automatically respects the system haptic feedback accessibility setting
- *. All ticks are throttled to a minimum interval of [throttleMs]
- * to prevent unpleasant buzzing during fast flings.
+ * Uses [View.performHapticFeedback], which needs no VIBRATE permission and honours the
+ * system's own haptic feedback setting. All ticks are throttled to a minimum interval of
+ * [throttleMs] to prevent unpleasant buzzing during fast flings.
  */
 class HapticController(private val view: View) {
 
     private var lastTickTime = 0L
     private val throttleMs = 60L
 
-    /** Standard tick for crossing a book boundary in the BookStrip. */
+    /** Standard tick for crossing a book boundary on the shelf. */
     fun onBookBoundary() {
         throttledHaptic(HapticFeedbackConstants.CLOCK_TICK)
     }
