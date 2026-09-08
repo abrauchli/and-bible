@@ -20,6 +20,7 @@ package net.bible.android.control.passagefinder
 import com.nhaarman.mockitokotlin2.mock
 import com.nhaarman.mockitokotlin2.whenever
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import net.bible.android.control.navigation.NavigationControl
 import net.bible.android.control.page.CurrentPageManager
@@ -30,8 +31,10 @@ import org.crosswire.jsword.versification.system.Versifications
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Unit tests for [PassageFinderDataSource]'s per-module book cache.
@@ -129,6 +132,34 @@ class PassageFinderDataSourceTest {
         assertEquals(3, loaded.books.size)
         currentInitials = "KJV"
         assertNull(dataSource.cachedBooks())
+    }
+
+    /**
+     * The warm-up on resume and a tap that misses the cache both call [loadBooks], and the
+     * call is slow by nature, so the window for a second caller to arrive mid-scan is wide.
+     * Letting both through would run the whole file scan twice for the same answer.
+     */
+    @Test
+    fun `concurrent loads scan the module only once`() = runTest {
+        val scans = AtomicInteger(0)
+        whenever(navigationControl.getAllDocumentBooksExcludingIntros()).thenAnswer {
+            scans.incrementAndGet()
+            // Hold the scan open long enough that the second caller is genuinely inside
+            // loadBooks() while the first is still working — without this the first can
+            // finish before the second starts and the test would pass without proving
+            // anything about concurrency.
+            Thread.sleep(150)
+            listOf(BibleBook.GEN, BibleBook.EXOD, BibleBook.MATT)
+        }
+
+        val first = async { dataSource.loadBooks() }
+        val second = async { dataSource.loadBooks() }
+        val a = first.await()
+        val b = second.await()
+
+        assertEquals(1, scans.get())
+        // The waiter gets the same cached instance rather than a second equal copy.
+        assertSame(a, b)
     }
 
     @Test

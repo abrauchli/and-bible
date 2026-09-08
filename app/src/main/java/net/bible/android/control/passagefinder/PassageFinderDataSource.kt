@@ -19,6 +19,8 @@ package net.bible.android.control.passagefinder
 
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.bible.android.control.navigation.NavigationControl
 import net.bible.android.control.page.PageControl
@@ -65,6 +67,9 @@ class PassageFinderDataSource(
     @Volatile
     private var cache: Pair<String, BookList>? = null
 
+    /** Held across the scan so concurrent callers share one load rather than racing. */
+    private val loadMutex = Mutex()
+
     /**
      * Returns the book list for the active module if it has already been loaded.
      *
@@ -96,6 +101,20 @@ class PassageFinderDataSource(
      */
     suspend fun loadBooks(): BookList = withContext(Dispatchers.IO) {
         cachedBooks()?.let { return@withContext it }
+        // Serialise the scan itself. Both the warm-up on resume and a tap that misses the
+        // cache call this, and the whole reason it exists is that it is slow — so the
+        // window in which a second caller arrives while the first is still reading is wide,
+        // and letting them both through would run that hundred-odd file scan twice for the
+        // same answer. The waiter almost always finds the cache filled by the time it gets
+        // the lock, so it re-checks first and usually returns without touching the disk.
+        loadMutex.withLock {
+            cachedBooks()?.let { return@withLock it }
+            loadUncached()
+        }
+    }
+
+    /** The actual scan. Call only under [loadMutex]. */
+    private fun loadUncached(): BookList {
         val loadKey = currentDocumentKey()
         val versification = navigationControl.versification
         val books = navigationControl.getAllDocumentBooksExcludingIntros()
@@ -118,7 +137,7 @@ class PassageFinderDataSource(
             // no longer say which module it describes.
             Log.d(TAG, "Document changed during load ($loadKey -> $settledKey); not caching")
         }
-        loaded
+        return loaded
     }
 
     /** Identity of the module the book list belongs to, or null if none is open. */

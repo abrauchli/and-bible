@@ -92,8 +92,8 @@ class PassageFinderLauncher(
      */
     fun warmUp() {
         // Build and attach the overlay now, so opening it never has to add a view to the
-        // DrawerLayout — that lays the whole hierarchy out again, which is work this
-        // widget exists to avoid doing on the path between the gesture and the first frame.
+        // hierarchy — that lays the whole thing out again, which is work this widget exists
+        // to avoid doing on the path between the gesture and the first frame.
         ensureView()
         if (dataSource.cachedBooks() != null) return
         activity.lifecycleScope.launch {
