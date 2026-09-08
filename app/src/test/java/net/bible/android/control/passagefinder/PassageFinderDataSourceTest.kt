@@ -19,6 +19,7 @@ package net.bible.android.control.passagefinder
 
 import com.nhaarman.mockitokotlin2.mock
 import com.nhaarman.mockitokotlin2.whenever
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
@@ -32,8 +33,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -52,6 +56,12 @@ class PassageFinderDataSourceTest {
     private lateinit var navigationControl: NavigationControl
     private lateinit var pageControl: PageControl
     private lateinit var dataSource: PassageFinderDataSource
+
+    /** Deadlock guard for the concurrency test's latches; never reached when passing. */
+    private val LATCH_TIMEOUT_SECONDS = 5L
+
+    /** Slack for the second caller to reach the lock; see the concurrency test. */
+    private val SECOND_CALLER_ARRIVAL_MS = 100L
 
     /** The module the reader currently has open; reassign to simulate a translation switch. */
     private var currentInitials: String? = "KJV"
@@ -142,18 +152,44 @@ class PassageFinderDataSourceTest {
     @Test
     fun `concurrent loads scan the module only once`() = runTest {
         val scans = AtomicInteger(0)
+        val scanStarted = CountDownLatch(1)
+        val releaseScan = CountDownLatch(1)
         whenever(navigationControl.getAllDocumentBooksExcludingIntros()).thenAnswer {
             scans.incrementAndGet()
-            // Hold the scan open long enough that the second caller is genuinely inside
-            // loadBooks() while the first is still working — without this the first can
-            // finish before the second starts and the test would pass without proving
-            // anything about concurrency.
-            Thread.sleep(150)
+            scanStarted.countDown()
+            // Hold the scan open until the test lets it finish, so the second caller meets
+            // a load that is genuinely still running. Waiting on a latch rather than
+            // sleeping for a guessed duration keeps the handshake explicit and costs no
+            // wall-clock time; the timeout is only a deadlock guard.
+            releaseScan.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             listOf(BibleBook.GEN, BibleBook.EXOD, BibleBook.MATT)
         }
 
-        val first = async { dataSource.loadBooks() }
-        val second = async { dataSource.loadBooks() }
+        // Real threads, not the test dispatcher: the point is genuine concurrency, and a
+        // test-dispatcher coroutine would not start until the scheduler advanced — which
+        // the latch wait below deliberately does not do.
+        val first = async(Dispatchers.Default) { dataSource.loadBooks() }
+        assertTrue(
+            "the first caller must be inside the scan before the second arrives",
+            scanStarted.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS),
+        )
+
+        val secondEntered = CountDownLatch(1)
+        val second = async(Dispatchers.Default) {
+            secondEntered.countDown()
+            dataSource.loadBooks()
+        }
+        assertTrue(secondEntered.await(LATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+        // The latch fires just before the call, and the caller still has a cache check and
+        // a dispatch to Dispatchers.IO to get through before it reaches the lock. Nothing
+        // observable marks that arrival, so cover it with a brief pause: releasing the
+        // scan the instant the latch fires lets the first load finish and cache, and the
+        // second then takes the cache-hit path — which passes whether or not the lock
+        // exists, and so tests nothing. Verified by removing the lock and watching this
+        // fail.
+        Thread.sleep(SECOND_CALLER_ARRIVAL_MS)
+        releaseScan.countDown()
+
         val a = first.await()
         val b = second.await()
 
